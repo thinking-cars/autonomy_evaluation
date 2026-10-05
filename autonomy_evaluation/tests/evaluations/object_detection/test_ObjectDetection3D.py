@@ -26,8 +26,10 @@ import pytest
 from autonomy_datasets_msgs.msg import ObjectListMetaInfo, ObjectMetaInfo
 from autonomy_evaluation.evaluations.object_detection.ObjectDetection3D import _class_types, ObjectDetection3D
 from diagnostic_msgs.msg import KeyValue
+from geometry_msgs.msg import TransformStamped
 from perception_msgs.msg import HEXAMOTION, Object, ObjectClassification, ObjectList
 from perception_msgs_utils import initialize_state, set_continuous_state_covariance_to_unknown_at
+from tf2_ros import Buffer
 
 CAR = ObjectClassification.CAR
 UTILITY = ObjectClassification.UTILITY
@@ -161,6 +163,19 @@ def _label(gts: List[GroundTruth], frame_id: str = "base_link") -> Tuple[ObjectL
     meta_info = ObjectListMetaInfo(objects=meta_entries)
     meta_info.header.frame_id = frame_id
     return label, meta_info
+
+
+def _lidar_tf_buffer(x: float, yaw: float) -> Buffer:
+    """Build a tf2 buffer holding the static transform of a 'lidar_top' frame at ``x`` turned by ``yaw`` in 'base_link'."""
+    transform = TransformStamped()
+    transform.header.frame_id = "base_link"
+    transform.child_frame_id = "lidar_top"
+    transform.transform.translation.x = x
+    transform.transform.rotation.z = math.sin(yaw / 2.0)
+    transform.transform.rotation.w = math.cos(yaw / 2.0)
+    tf_buffer = Buffer()
+    tf_buffer.set_transform_static(transform, "test")
+    return tf_buffer
 
 
 class TestObjectDetection3D:
@@ -659,11 +674,26 @@ class TestObjectDetection3D:
 
         assert result["metrics"]["sample_ground_truth_num"] == 1
 
-    def test_rejects_predictions_and_labels_in_different_frames(self):
-        """Boxes of different frames cannot be compared, e.g. lidar-frame detections with vehicle-frame labels."""
+    def test_transforms_predictions_into_the_frame_of_the_labels(self):
+        """Lidar-frame detections are compared with vehicle-frame labels after transforming them with tf2."""
+        self.bm.tf_buffer = _lidar_tf_buffer(x=1.0, yaw=math.pi / 2)
+        # the lidar 1 m ahead of the vehicle origin faces to the left, so 10 m to its right are 11 m ahead of the origin
+        label, _ = _label([_gt(x=11.0, yaw=math.pi / 2)], frame_id="base_link")
+
+        result = self.bm.compute_sample_metrics(_msg([_pred(y=-10.0, yaw=0.0)], frame_id="lidar_top"), label)
+
+        entry = result["match_records"][2.0][0]
+        assert entry["is_tp"] is True
+        assert entry["ate"] == pytest.approx(0.0, abs=1e-6)
+        assert entry["aoe"] == pytest.approx(0.0, abs=1e-6)
+
+    @pytest.mark.parametrize("has_tf_buffer", [False, True])
+    def test_rejects_predictions_that_cannot_be_transformed_into_the_frame_of_the_labels(self, has_tf_buffer):
+        """Boxes of different frames cannot be compared without a transform between them."""
+        self.bm.tf_buffer = Buffer() if has_tf_buffer else None
         label, _ = _label([_gt(x=0.0)], frame_id="base_link")
 
-        with pytest.raises(ValueError, match="frame"):
+        with pytest.raises(ValueError, match="'lidar_top' cannot be transformed into frame 'base_link'"):
             self.bm.compute_sample_metrics(_msg([_pred(x=0.0)], frame_id="lidar_top"), label)
 
     def test_accepts_objects_without_frame(self):
@@ -728,6 +758,16 @@ class TestObjectDetection3D:
         assert outputs["false_positives"].header.stamp.sec == 1
         assert outputs["false_negatives"].header.stamp.sec == 2
         assert outputs["ignored"].header.stamp.sec == 2
+
+    def test_visualization_shows_predictions_in_the_frame_of_the_labels(self):
+        """Predictions of another frame are published as they were compared, transformed into the frame of the labels."""
+        self.bm.tf_buffer = _lidar_tf_buffer(x=1.0, yaw=0.0)
+        label, label_meta_info = _label([_gt(x=11.0)], frame_id="base_link")
+
+        outputs = self.bm.visualize_sample(_msg([_pred(x=10.0)], frame_id="lidar_top"), label, label_meta_info=label_meta_info)
+
+        assert outputs["true_positives"].header.frame_id == "base_link"
+        assert outputs["true_positives"].objects[0].state.continuous_state[HEXAMOTION.X] == pytest.approx(11.0)
 
     def test_visualization_omits_objects_dropped_before_matching(self):
         """Objects the pre-matching filters remove appear in none of the lists."""

@@ -42,7 +42,9 @@ Scoring:
 
 Key evaluation settings:
 
-- Matching:   Predictions, highest confidence first, each claim the nearest
+- Frames:     Predictions in another frame than the labels are transformed into
+              the frame of the labels with tf2.
+- Matching:  Predictions, highest confidence first, each claim the nearest
               unclaimed compatible label whose BEV center is closer than the
               threshold.
 - Thresholds: 0.5, 1.0, 2.0, 4.0 m (applied uniformly to all classes).
@@ -65,12 +67,14 @@ Key evaluation settings:
 
 from __future__ import annotations
 
+import copy
 import math
 from collections import Counter
 from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Tuple
 
 import numpy as np
 import rclpy.logging
+import tf2_perception_msgs  # noqa: F401, registers the tf2 transform of perception_msgs/ObjectList
 from autonomy_datasets_msgs.msg import ObjectListMetaInfo
 from autonomy_evaluation.evaluations.Evaluation import Evaluation
 from autonomy_evaluation.utils.ObjectDetectionUtils import ObjectDetectionUtils
@@ -92,6 +96,7 @@ from perception_msgs_utils.state_index import index_vel_lat, index_vel_lon
 from shapely.affinity import rotate as shapely_rotate
 from shapely.geometry import box as shapely_box
 from shapely.geometry import Point
+from tf2_ros import TransformException
 
 # Evaluated classes of perception_msgs/ObjectClassification by their names, in the order of their types
 _CLASS_NAMES: Dict[int, str] = {
@@ -362,8 +367,10 @@ class ObjectDetection3D(Evaluation):
     ) -> Dict[str, Any]:
         """Pass 1 - match predictions to labels for one frame.
 
-        Extracts and filters the objects (:meth:`_prepare_objects`), then
-        greedily matches them by BEV distance at every threshold
+        Transforms the predictions into the frame of the labels
+        (:meth:`_in_label_frame`), extracts and filters the objects
+        (:meth:`_prepare_objects`), then greedily matches them by BEV distance
+        at every threshold
         (:meth:`_match`). Matching does not depend on how the classes are
         evaluated, which is only decided once all samples are known
         (:meth:`compute_aggregated_metrics`).
@@ -388,10 +395,10 @@ class ObjectDetection3D(Evaluation):
             true or false positive (see :meth:`_entry`).
 
         Raises:
-            ValueError: ``prediction`` and ``label`` are given in different frames.
+            ValueError: ``prediction`` cannot be transformed into the frame of ``label``.
         """
 
-        predictions, labels = self._prepare_objects(prediction, label, label_meta_info)
+        predictions, labels = self._prepare_objects(self._in_label_frame(prediction, label), label, label_meta_info)
         positives = [record for record in labels if record["positive"]]
         candidates = self._candidates(predictions, labels)
 
@@ -465,15 +472,16 @@ class ObjectDetection3D(Evaluation):
         Returns:
             Output name to ``perception_msgs/ObjectList``, keyed as in
             :meth:`visualization_outputs`. The positives carry predicted
-            objects and the header of ``prediction``; the false negatives carry
-            ground-truth objects and the header of ``label``, as do the ignored
-            objects, which hold both don't-care labels and the predictions that
-            claimed them.
+            objects and the header of ``prediction``, both transformed into the
+            frame of ``label``; the false negatives carry ground-truth objects
+            and the header of ``label``, as do the ignored objects, which hold
+            both don't-care labels and the predictions that claimed them.
 
         Raises:
-            ValueError: ``prediction`` and ``label`` are given in different frames.
+            ValueError: ``prediction`` cannot be transformed into the frame of ``label``.
         """
 
+        prediction = self._in_label_frame(prediction, label)
         predictions, labels = self._prepare_objects(prediction, label, label_meta_info)
         matches = self._match(self._candidates(predictions, labels), self.tp_metric_threshold)
 
@@ -656,6 +664,46 @@ class ObjectDetection3D(Evaluation):
             records.append(record)
         return records
 
+    def _in_label_frame(self, prediction: Any, label: Any) -> Any:
+        """Transform the predictions into the frame of the labels, so that both can be compared.
+
+        Predictions in another frame than the labels, e.g. lidar-frame
+        detections of vehicle-frame labels, are transformed with the transform
+        :attr:`tf_buffer` holds at the stamp of the predictions, which is warned
+        about once. Only the poses of the objects are transformed; their
+        velocities are given along their heading and follow its yaw. An empty
+        frame cannot be checked, so it is assumed to be the frame of the other
+        object list.
+
+        Args:
+            prediction: Predicted objects (``perception_msgs/ObjectList``).
+            label: Ground-truth objects (``perception_msgs/ObjectList``).
+
+        Returns:
+            ``prediction`` itself if it is given in the frame of ``label``, else
+            a copy transformed into that frame.
+
+        Raises:
+            ValueError: no transform from the frame of ``prediction`` into the
+                frame of ``label`` is available at the stamp of ``prediction``.
+        """
+
+        prediction_frame, label_frame = prediction.header.frame_id, label.header.frame_id
+        if not prediction_frame or not label_frame or prediction_frame == label_frame:
+            return prediction
+        _LOGGER.warning(
+            f"Predictions in frame '{prediction_frame}' are transformed into frame '{label_frame}' of the labels",
+            once=True,
+        )
+        error = f"Predictions in frame '{prediction_frame}' cannot be transformed into frame '{label_frame}' of the labels"
+        if self.tf_buffer is None:
+            raise ValueError(f"{error}, as no transforms are available")
+        try:
+            # the tf2 transform of perception_msgs/ObjectList modifies the message it transforms
+            return self.tf_buffer.transform(copy.deepcopy(prediction), label_frame)
+        except TransformException as exception:
+            raise ValueError(f"{error}: {exception}") from exception
+
     def _prepare_objects(
         self,
         prediction: Any,
@@ -673,24 +721,15 @@ class ObjectDetection3D(Evaluation):
            classes (:attr:`class_ranges`).
 
         Args:
-            prediction: Predicted objects (``perception_msgs/ObjectList``).
+            prediction: Predicted objects (``perception_msgs/ObjectList``) in
+                the frame of ``label``.
             label: Ground-truth objects (``perception_msgs/ObjectList``).
             label_meta_info: The dataset annotations of ``label``, or ``None``.
 
         Returns:
             ``(predictions, labels)`` ready for matching, the predictions in
             descending order of confidence.
-
-        Raises:
-            ValueError: ``prediction`` and ``label`` are given in different frames.
         """
-
-        prediction_frame, label_frame = prediction.header.frame_id, label.header.frame_id
-        if prediction_frame and label_frame and prediction_frame != label_frame:
-            raise ValueError(
-                f"Predictions in frame '{prediction_frame}' cannot be compared with labels in frame '{label_frame}', "
-                "publish both in the same frame"
-            )
 
         predictions = self._extract_objects(prediction)
         labels = self._extract_objects(label, label_meta_info, is_label=True)

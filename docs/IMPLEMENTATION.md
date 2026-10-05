@@ -24,7 +24,7 @@ Evaluates 3D bounding boxes, e.g. detected in lidar point clouds, camera images 
 | Topic | Type | Description |
 | --- | --- | --- |
 | `prediction` | `perception_msgs/ObjectList` | 3D objects detected by the system under test |
-| `label` | `perception_msgs/ObjectList` | 3D object labels of the dataset, in the same frame as the predictions |
+| `label` | `perception_msgs/ObjectList` | 3D object labels of the dataset; predictions in another frame are transformed into the frame of the labels with the transforms published on `/tf` and `/tf_static` |
 | `label_meta_info` (optional) | `autonomy_datasets_msgs/ObjectListMetaInfo` | dataset annotations of the labels, subscribed next to `label` on `<label topic>/meta_info`; only read to recognize bike racks. Samples of a dataset that publishes no meta information are evaluated without it |
 
 Metrics are computed based on the following assumptions:
@@ -73,7 +73,7 @@ Metrics are computed based on the following assumptions:
 - **Attributes**: `perception_msgs/Object` cannot carry attributes, so the attribute error `aae` is not evaluated and the detection score is not comparable to the official NDS.
 - **Velocities**: as nuScenes skips labels whose velocity cannot be determined, the velocity error skips labels whose velocity is not marked as set in their state covariance. Without any such label, `ave` is left out of the detection score instead of counting as error 1.
 - **Label filters**: the evaluation does not filter labels by their number of points. autonomy_datasets publishes lidar labels with at least `min_lidar_points_in_bbox` lidar points (default `1`), so labels that only radar points fall into are missing. Bike racks are only known if their labels are published, and their footprint is checked in 2D.
-- **Ranges** are measured from the origin of the frame the objects are given in, e.g. the lidar, instead of the ego vehicle.
+- **Ranges** are measured from the origin of the frame the labels are given in, e.g. the lidar, instead of the ego vehicle.
 - **TP errors** are interpolated over the recall of all predictions instead of over their confidence.
 - The number of predictions per sample is not limited.
 

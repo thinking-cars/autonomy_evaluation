@@ -20,6 +20,8 @@ import os
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple
 
+from tf2_ros import BufferInterface
+
 
 class Evaluation(ABC):
     """Meta-class (abstract base class) for the evaluations of automated driving tasks.
@@ -38,6 +40,10 @@ class Evaluation(ABC):
     its topics.  The message of optional ground truth that is not published is
     passed as ``None``.
 
+    Messages given in different frames are related through :attr:`tf_buffer`,
+    which the node fills with the transforms published on ``/tf`` and
+    ``/tf_static``.
+
     Subclasses declare the version of their evaluation via the class attributes
     :attr:`VERSION` and :attr:`RELEASE_NOTES`.
     """
@@ -54,6 +60,8 @@ class Evaluation(ABC):
         self.description: str = description
         self.version = self.VERSION
         self.release_notes = self.RELEASE_NOTES
+        # Transforms between the frames of the messages, set by the node; None while no transform is available
+        self.tf_buffer: Optional[BufferInterface] = None
         self._sample_results: List[Dict[str, Any]] = []
 
     # ------------------------------------------------------------------

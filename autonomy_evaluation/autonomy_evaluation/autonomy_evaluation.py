@@ -21,6 +21,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from rclpy.subscription import Subscription
 from rclpy.task import Future
 from rclpy.timer import Timer
+from tf2_ros import Buffer, TransformListener
 
 # Interval in seconds at which the evaluation checks whether it can request further samples; the
 # evaluation also advances whenever a request is answered or a sample has been evaluated
@@ -399,6 +400,13 @@ class AutonomyEvaluation(Node):
         except ValueError as exception:
             self.get_logger().fatal(f"{exception}, exiting")
             raise SystemExit(1)
+
+        # provide the evaluation with the transforms between the frames of its messages, e.g. to
+        # compare objects given in different frames; the buffer follows the node clock, so that it
+        # is cleared when the simulation clock jumps back to a scene recorded earlier
+        self.tf_buffer = Buffer(node=self)
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        evaluation_handler.tf_buffer = self.tf_buffer
 
         # create subscriptions for the topics of the evaluation, whose messages are matched into
         # the samples to evaluate by their stamp; a sample only waits for the message of an
