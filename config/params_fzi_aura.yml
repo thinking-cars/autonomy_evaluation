@@ -9,14 +9,28 @@
     fzi_aura_samples: keyframes  # keyframes (2 Hz, annotated) or all (10 Hz)
     fzi_aura_lidar_stage: motion_compensated  # motion_compensated or raw
     fzi_aura_publish_semantic_labels: true  # publish semantic lidar labels as point fields
+    fzi_aura_image_scale: 1.0  # scales the native 1920x1200 camera images, e.g. 0.5 to halve the rosbag size
     fzi_aura_auto_download: true  # requires accepted dataset terms and 'hf auth login'
     fzi_aura_download_layers: ""  # e.g. camera_keyframes,lidar_motion_compensated_keyframes
 
     publish_ego_data: false
     publish_camera_images: false
-    publish_lidar_pointclouds: true
+    publish_lidar_01_pointclouds: true  # top_left (Ouster)
+    publish_lidar_02_pointclouds: false  # top_right (Ouster)
+    publish_lidar_03_pointclouds: false  # front_left (Ouster)
+    publish_lidar_04_pointclouds: false  # front_right (Ouster)
+    publish_lidar_05_pointclouds: false  # rear_left (Ouster)
+    publish_lidar_06_pointclouds: false  # rear_right (Ouster)
+    publish_lidar_07_pointclouds: false  # aeva_front_center (Aeva)
+    publish_lidar_08_pointclouds: false  # aeva_front_left (Aeva)
+    publish_lidar_09_pointclouds: false  # aeva_front_right (Aeva)
+    publish_lidar_10_pointclouds: false  # aeva_side_left (Aeva)
+    publish_lidar_11_pointclouds: false  # aeva_side_right (Aeva)
+    publish_lidar_12_pointclouds: false  # aeva_rear_center (Aeva)
     publish_radar_pointclouds: false
     publish_lidar_object_lists: true
     publish_base_link_object_lists: false
 
-    publish_lanelet2_map: false
+    publish_lanelet2_map: false  # generated from OpenStreetMap; requires internet access
+    fzi_aura_lanelet2_lane_width: 3.5
+    fzi_aura_overpass_url: https://overpass-api.de/api/interpreter
