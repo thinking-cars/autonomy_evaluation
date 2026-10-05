@@ -35,7 +35,7 @@ services:
   ## DATASET ##
 
   autonomy_datasets:
-    image: ghcr.io/thinking-cars/autonomy_datasets:v1.6.0
+    image: ghcr.io/thinking-cars/autonomy_datasets:v1.7.0
     command:
       - /bin/bash
       - -ic
