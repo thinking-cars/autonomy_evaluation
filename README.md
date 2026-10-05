@@ -51,8 +51,8 @@ Use the provided [docker-compose.yml](docker-compose.yml) to start the full pipe
 xhost +local:
 
 # pull and start Docker containers
-export COMPOSE_PROFILES="focalformer3d"  # or 'centerpoint'
-docker compose pull
+cp .env.template .env
+# configure evaluated module and dataset in the '.env' file
 docker compose up -d
 # stop containers once finished
 docker compose down

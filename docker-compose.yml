@@ -50,6 +50,7 @@ services:
     environment:
       RMW_IMPLEMENTATION: rmw_fastrtps_cpp
       DATASET: ${DATASET}
+      HF_TOKEN: ${HF_TOKEN}
     volumes:
       - ./config/params_${DATASET}.yml:/params_${DATASET}.yml
       - $DATASET_DIR:/datasets
