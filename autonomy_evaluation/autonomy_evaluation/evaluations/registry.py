@@ -20,9 +20,9 @@ from autonomy_evaluation.evaluations.Evaluation import Evaluation
 # only imported once its evaluation is selected, so that running one evaluation does not require
 # the dependencies of all others.
 EVALUATIONS: Dict[str, Tuple[str, str]] = {
-    "nuscenes_lidar_object_detection": (
-        "autonomy_evaluation.evaluations.lidar_object_detection.NuscenesLidarObjectDetection",
-        "NuscenesLidarObjectDetection",
+    "object_detection_3d": (
+        "autonomy_evaluation.evaluations.object_detection.ObjectDetection3D",
+        "ObjectDetection3D",
     ),
 }
 

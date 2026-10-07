@@ -18,10 +18,10 @@ from launch_ros.substitutions import FindPackageShare
 def input_remappings(evaluation: Evaluation, launch_configurations: Mapping[str, str]) -> list[tuple[str, str]]:
     """Remap the topics the evaluation reads onto the topics given by the launch arguments of their names.
 
-    Every input and ground-truth topic of the evaluation is configured by a launch argument of its name,
-    e.g. ``prediction:=/object_list/prediction``. A topic without such an argument is subscribed in the
-    private namespace of the node, except for a topic published next to another one, which the node derives
-    from the topic of that one.
+    Every input and ground-truth topic of the evaluation, required or optional, is configured by a launch
+    argument of its name, e.g. ``prediction:=/object_list/prediction``. A topic without such an argument is
+    subscribed in the private namespace of the node, except for a topic published next to another one, which
+    the node derives from the topic of that one.
 
     Args:
         evaluation (Evaluation): evaluation to run
@@ -91,7 +91,7 @@ def generate_launch_description():
         *remappable_topics,
         DeclareLaunchArgument(
             "evaluation",
-            default_value="nuscenes_lidar_object_detection",
+            default_value="object_detection_3d",
             description="name of an evaluation of this package, or '<module>:<class>' of an evaluation implemented in "
             "another package; each topic the evaluation reads is set by an argument of its name, e.g. prediction:=/topic",
         ),

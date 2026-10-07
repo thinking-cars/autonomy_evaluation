@@ -6,7 +6,7 @@ import signal
 import time
 from collections import deque, OrderedDict
 from functools import partial
-from typing import Any, Callable, Optional, Sequence, Union
+from typing import Any, Callable, Collection, Optional, Sequence, Union
 
 import rclpy
 import rclpy.exceptions
@@ -21,6 +21,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from rclpy.subscription import Subscription
 from rclpy.task import Future
 from rclpy.timer import Timer
+from tf2_ros import Buffer, TransformListener
 
 # Interval in seconds at which the evaluation checks whether it can request further samples; the
 # evaluation also advances whenever a request is answered or a sample has been evaluated
@@ -80,6 +81,11 @@ class SampleSynchronizer:
     instead, and therefore discards the messages of a scene that starts before the end of the
     preceding one.)
 
+    A sample is complete once the messages of all required inputs have been received. It waits
+    for the message of an optional input only while that input is expected, i.e. while its topic
+    has a publisher; otherwise, the sample is reported without it. Not every dataset publishes
+    the meta information of its object lists, for example.
+
     Messages are added from subscription callbacks, which the node executor runs one after
     another, so no locking is needed.
     """
@@ -90,6 +96,8 @@ class SampleSynchronizer:
         callback: Callable[[Stamp, dict[str, Any]], None],
         queue_size: int = _SYNCHRONIZER_QUEUE_SIZE,
         tolerance: float = 0.0,
+        optional_topics: Collection[str] = (),
+        expects_message: Callable[[str], bool] = lambda topic: True,
     ):
         """Constructor
 
@@ -97,14 +105,23 @@ class SampleSynchronizer:
             topics (Sequence[str]): input names to match, in the order their messages are passed
                 to the callback
             callback (Callable[[Stamp, dict[str, Any]], None]): called for every completed sample
-                with the stamp of its message of the first input and its messages by input name
+                with the stamp of its message of the first required input and its messages by
+                input name, which are None for the optional inputs it is reported without
             queue_size (int, optional): number of samples to keep while they wait for the messages
                 of their remaining inputs
             tolerance (float, optional): seconds by which the stamps of the messages of a sample
                 may differ; 0 only matches messages with exactly the same stamp
+            optional_topics (Collection[str], optional): input names among the topics whose
+                messages a sample is only waited for while they are expected
+            expects_message (Callable[[str], bool], optional): reports whether a message of an
+                optional input is expected, which is asked whenever a sample has received the
+                messages of all required inputs but not of that optional input
         """
         self.topics = list(topics)
+        self.optional_topics = [topic for topic in self.topics if topic in optional_topics]
+        self.required_topics = [topic for topic in self.topics if topic not in optional_topics]
         self.callback = callback
+        self.expects_message = expects_message
         self.queue_size = queue_size
         self.tolerance_ns = round(tolerance * 1e9)
         # stamped messages of the samples that are still missing inputs, by the stamp of the
@@ -123,9 +140,15 @@ class SampleSynchronizer:
         messages = self.incomplete_samples.setdefault(sample_stamp, {})
         messages[topic] = (stamp, message)
 
-        if len(messages) == len(self.topics):
+        # complete once all required inputs have been received, and those optional inputs that are expected
+        if all(topic in messages for topic in self.required_topics) and not any(
+            topic not in messages and self.expects_message(topic) for topic in self.optional_topics
+        ):
             del self.incomplete_samples[sample_stamp]
-            self.callback(messages[self.topics[0]][0], {topic: messages[topic][1] for topic in self.topics})
+            self.callback(
+                messages[self.required_topics[0]][0],
+                {topic: messages[topic][1] if topic in messages else None for topic in self.topics},
+            )
             return
 
         # give up on the sample that has been waiting for its remaining inputs the longest
@@ -184,7 +207,7 @@ class AutonomyEvaluation(Node):
             param_type=rclpy.Parameter.Type.STRING,
             description="name of an evaluation of this package, or '<module>:<class>' of an evaluation implemented in "
             "another package",
-            default="nuscenes_lidar_object_detection",
+            default="object_detection_3d",
             add_to_auto_reconfigurable_params=False,
             read_only=True,
         )
@@ -378,13 +401,24 @@ class AutonomyEvaluation(Node):
             self.get_logger().fatal(f"{exception}, exiting")
             raise SystemExit(1)
 
+        # provide the evaluation with the transforms between the frames of its messages, e.g. to
+        # compare objects given in different frames; the buffer follows the node clock, so that it
+        # is cleared when the simulation clock jumps back to a scene recorded earlier
+        self.tf_buffer = Buffer(node=self)
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        evaluation_handler.tf_buffer = self.tf_buffer
+
         # create subscriptions for the topics of the evaluation, whose messages are matched into
-        # the samples to evaluate by their stamp
+        # the samples to evaluate by their stamp; a sample only waits for the message of an
+        # optional topic while that topic is published
+        self.unpublished_optional_topics: set[str] = set()
         self.message_synchronizer = SampleSynchronizer(
             topics=list(inputs),
             callback=self.evaluate_sample,
             queue_size=_SYNCHRONIZER_QUEUE_SIZE,
             tolerance=self.sync_tolerance,
+            optional_topics=list(evaluation_handler.optional_ground_truth()),
+            expects_message=self.is_published,
         )
         derived_topics = evaluation_handler.derived_topics()
         for name, msg_type in inputs.items():
@@ -399,8 +433,12 @@ class AutonomyEvaluation(Node):
                     depth=10,
                 ),
             )
-        ground_truth = evaluation_handler.required_ground_truth()
-        for role, names in (("input", [name for name in inputs if name not in ground_truth]), ("ground truth", ground_truth)):
+        roles = {
+            "input": evaluation_handler.required_inputs(),
+            "ground truth": evaluation_handler.required_ground_truth(),
+            "optional ground truth": evaluation_handler.optional_ground_truth(),
+        }
+        for role, names in roles.items():
             if names:
                 topics = ", ".join(f"'{name}' from '{self.data_subscriptions[name].topic_name}'" for name in names)
                 self.get_logger().info(f"Evaluating {role} {topics}")
@@ -495,6 +533,27 @@ class AutonomyEvaluation(Node):
             return name
         source, suffix = derived_topics[name]
         return self.resolve_topic_name(source) + suffix
+
+    def is_published(self, name: str) -> bool:
+        """Reports whether the topic of optional ground truth has a publisher, so that its messages are waited for
+
+        A sample whose required inputs have all been received is evaluated without the message of
+        an optional input whose topic has no publisher, e.g. without the meta information of the
+        labels of a dataset that publishes none. That is logged once per input.
+
+        Args:
+            name (str): name of the optional input
+
+        Returns:
+            bool: whether the topic of the input has a publisher
+        """
+        topic = self.data_subscriptions[name].topic_name
+        if self.count_publishers(topic) > 0:
+            return True
+        if name not in self.unpublished_optional_topics:
+            self.unpublished_optional_topics.add(name)
+            self.get_logger().info(f"Evaluating the samples without optional '{name}', as '{topic}' has no publisher")
+        return False
 
     def advance_evaluation(self):
         """Requests the next samples to evaluate, or finalizes the evaluation once all were published
@@ -675,7 +734,7 @@ class AutonomyEvaluation(Node):
             return
 
         results = self.evaluation_handler.finalize(complete=complete)
-        aggregated_metrics = json.dumps(results["aggregated_metrics"], indent=2, default=str)
+        aggregated_metrics = json.dumps(results["metrics"], indent=2, default=str)
         evaluated_samples = f"{results['num_samples']} evaluated sample(s) of {results['num_scenes']} scene(s)"
         if complete:
             self.get_logger().info(f"Evaluation '{self.evaluation}' finished after {evaluated_samples}.")
@@ -726,7 +785,8 @@ class AutonomyEvaluation(Node):
         """Evaluates a single sample once the messages of all its inputs have been received
 
         The messages are passed to the evaluation by the names of their inputs, which match the
-        parameters of its ``compute_sample_metrics``.
+        parameters of its ``compute_sample_metrics``. The message of optional ground truth whose
+        topic is not published is None.
 
         Samples are identified by the stamp of their message of the first input, which is the
         stamp the dataset recorded them with, and are attributed to the scene the dataset

@@ -1,6 +1,6 @@
 repositories:
-  # only needed for the autonomy_datasets_msgs package, which carries the dataset
-  # meta information that perception_msgs/Object cannot express
+  # only needed for the autonomy_datasets_msgs package, which carries the service to request samples
+  # and the dataset meta information that perception_msgs/Object cannot express
   autonomy_datasets:
     type: git
     url: https://github.com/thinking-cars/autonomy_datasets.git

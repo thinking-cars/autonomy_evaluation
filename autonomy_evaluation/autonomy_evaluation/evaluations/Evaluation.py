@@ -4,11 +4,13 @@
 """Abstract base class for all evaluations of automated driving tasks.
 
 Each evaluation defines which topics it reads and how to compute per-sample and
-aggregated metrics from their messages.  An evaluation may read the topics of a
+aggregated metrics from their messages. An evaluation may read the topics of a
 system under test only, e.g. the ego state and the surrounding objects of a
 closed-loop planner to compute its time to collision, or compare them with
 ground-truth topics, e.g. the predictions of a perception algorithm with the
-labels of a dataset.  Concrete subclasses must override the abstract methods.
+labels of a dataset. Ground truth that enriches an evaluation without being
+necessary for it, e.g. dataset annotations that not every dataset publishes, is
+declared as optional. Concrete subclasses must override the abstract methods.
 """
 
 from __future__ import annotations
@@ -18,13 +20,16 @@ import os
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple
 
+from tf2_ros import BufferInterface
+
 
 class Evaluation(ABC):
     """Meta-class (abstract base class) for the evaluations of automated driving tasks.
 
     An evaluation is responsible for:
     * declaring the topics it reads, split into the inputs from the system
-      under test and, if it compares them with a reference, the ground truth,
+      under test and, if it compares them with a reference, the required and
+      optional ground truth,
     * computing per-sample metrics from the messages of these topics,
     * aggregating per-sample metrics into scene-level and dataset-level metrics,
     * persisting results to JSON.
@@ -32,13 +37,31 @@ class Evaluation(ABC):
     The messages of all topics that belong to the same sample are passed to
     :meth:`compute_sample_metrics` as keyword arguments named after the topics
     (see :meth:`all_inputs`), so an implementation names its parameters like
-    its topics.
+    its topics.  The message of optional ground truth that is not published is
+    passed as ``None``.
+
+    Messages given in different frames are related through :attr:`tf_buffer`,
+    which the node fills with the transforms published on ``/tf`` and
+    ``/tf_static``.
+
+    Subclasses declare the version of their evaluation via the class attributes
+    :attr:`VERSION` and :attr:`RELEASE_NOTES`.
     """
+
+    #: Version of the evaluation implementation.
+    VERSION: str = "0.0.0"
+
+    #: Mapping of version strings to their release notes.
+    RELEASE_NOTES: Dict[str, str] = {}
 
     def __init__(self, name: str, description: str = "") -> None:
         """Initialize an evaluation definition and empty result store."""
         self.name: str = name
         self.description: str = description
+        self.version = self.VERSION
+        self.release_notes = self.RELEASE_NOTES
+        # Transforms between the frames of the messages, set by the node; None while no transform is available
+        self.tf_buffer: Optional[BufferInterface] = None
         self._sample_results: List[Dict[str, Any]] = []
 
     # ------------------------------------------------------------------
@@ -76,6 +99,25 @@ class Evaluation(ABC):
         """
         return {}
 
+    def optional_ground_truth(self) -> Dict[str, Any]:
+        """Define the ground-truth topics that are compared with the inputs while they are published.
+
+        Optional ground truth is a reference that not every source of ground
+        truth provides, e.g. meta information published next to the labels
+        of a dataset that ``perception_msgs`` cannot express.  A sample is
+        evaluated once the messages of all required topics have been received,
+        waiting for the message of an optional topic only while that topic has
+        a publisher.  Otherwise, its message is passed to
+        :meth:`compute_sample_metrics` as ``None``.
+
+        Returns
+        -------
+        A dictionary mapping ground-truth names to their ROS message types,
+        empty by default. The names are used like those of
+        :meth:`required_inputs`.
+        """
+        return {}
+
     def derived_topics(self) -> Dict[str, Tuple[str, str]]:
         """Define the inputs that are published next to the topic of another input.
 
@@ -101,7 +143,8 @@ class Evaluation(ABC):
             An optional identifier for the sample.
         messages:
             One message per topic of :meth:`all_inputs`, passed by the name
-            of its topic.
+            of its topic; ``None`` for optional ground truth that is not
+            published.
 
         Returns
         -------
@@ -121,7 +164,9 @@ class Evaluation(ABC):
         Returns
         -------
         A dictionary mapping aggregated metric names to their values (e.g.
-        mean-AP, precision, recall).
+        mean-AP, precision, recall).  A metric composed of sub-metrics is a
+        nested dictionary that holds its aggregated value under ``_value_``
+        next to its sub-metrics.
         """
 
     # ------------------------------------------------------------------
@@ -134,22 +179,30 @@ class Evaluation(ABC):
         Returns
         -------
         A dictionary mapping the names of the inputs, followed by those of the
-        ground truth, to their ROS message types.
+        required and of the optional ground truth, to their ROS message types.
 
         Raises
         ------
         ValueError
-            If the evaluation reads no topic, an input and a ground-truth topic
-            share a name, or a derived topic refers to a topic it does not read.
+            If the evaluation requires no topic, declares a topic name twice,
+            e.g. as input and as ground truth, or a derived topic refers to a
+            topic it does not read.
         """
-        inputs = dict(self.required_inputs())
-        ground_truth = self.required_ground_truth()
-        shared_names = sorted(set(inputs) & set(ground_truth))
-        if shared_names:
-            raise ValueError(f"Evaluation '{self.name}' declares {shared_names} as input and as ground truth")
-        inputs.update(ground_truth)
-        if not inputs:
-            raise ValueError(f"Evaluation '{self.name}' declares no topic to evaluate")
+        declared_topics = {
+            "input": self.required_inputs(),
+            "ground truth": self.required_ground_truth(),
+            "optional ground truth": self.optional_ground_truth(),
+        }
+        inputs: Dict[str, Any] = {}
+        roles: Dict[str, str] = {}
+        for role, topics in declared_topics.items():
+            for name, msg_type in topics.items():
+                if name in roles:
+                    raise ValueError(f"Evaluation '{self.name}' declares '{name}' as {roles[name]} and as {role}")
+                inputs[name] = msg_type
+                roles[name] = role
+        if not declared_topics["input"] and not declared_topics["ground truth"]:
+            raise ValueError(f"Evaluation '{self.name}' requires no topic to evaluate")
         for name, (source, _) in self.derived_topics().items():
             if name not in inputs or source not in inputs or source == name:
                 raise ValueError(f"Evaluation '{self.name}' derives the topic of '{name}' from that of '{source}'")
@@ -165,7 +218,7 @@ class Evaluation(ABC):
         Returns
         -------
         A dictionary mapping output names to their ROS message types, empty for
-        an evaluation that offers no visualization.  The names are node-relative
+        an evaluation that offers no visualization. The names are node-relative
         topics and match the keys of :meth:`visualize_sample`.
         """
         return {}
@@ -190,7 +243,7 @@ class Evaluation(ABC):
     def record_sample(self, sample_id: Optional[str] = None, scene_id: Optional[str] = None, **messages: Any) -> Dict[str, Any]:
         """Compute and store per-sample metrics.
 
-        This is the main entry point used by the evaluation loop.  The
+        This is the main entry point used by the evaluation loop. The
         *messages* of the sample are forwarded verbatim to
         :meth:`compute_sample_metrics`.
 
@@ -200,7 +253,7 @@ class Evaluation(ABC):
             An optional identifier for the sample.
         scene_id:
             The scene of the dataset the sample belongs to, which
-            :meth:`finalize` aggregates the samples by.  An evaluation loop
+            :meth:`finalize` aggregates the samples by. An evaluation loop
             that learns the scene only after the sample has been evaluated may
             set it on the returned entry instead of passing it here.
 
@@ -220,7 +273,7 @@ class Evaluation(ABC):
         Returns
         -------
         A dictionary mapping each scene to its recorded samples, in the order
-        the samples were recorded.  Samples recorded without a scene are left
+        the samples were recorded. Samples recorded without a scene are left
         out, as they cannot be attributed to one.
         """
         scenes: Dict[str, List[Dict[str, Any]]] = {}
@@ -233,14 +286,14 @@ class Evaluation(ABC):
     def finalize(self, complete: bool = True) -> Dict[str, Any]:
         """Compute aggregated metrics and return the full results payload.
 
-        Metrics are reported on three levels: ``aggregated_metrics`` over all
-        evaluated samples, ``scene_results`` over the samples of each scene, and
-        ``sample_results`` for every single sample.
+        Metrics are reported on two levels: ``metrics`` over all evaluated
+        samples, and the ``metrics`` of each scene in ``scenes`` over the
+        samples of that scene.
 
         Parameters
         ----------
         complete:
-            Whether all samples of the evaluation have been evaluated.  An
+            Whether all samples of the evaluation have been evaluated. An
             evaluation that was interrupted, e.g. with Ctrl-C, still reports the
             samples it did evaluate, marked as ``"complete": false`` so that
             they are not mistaken for the results over the whole dataset.
@@ -249,20 +302,20 @@ class Evaluation(ABC):
         scenes = self.sample_results_by_scene()
         return {
             "evaluation": self.name,
+            "version": self.version,
             "description": self.description,
             "complete": complete,
             "num_samples": len(self._sample_results),
             "num_scenes": len(scenes),
-            "aggregated_metrics": aggregated,
-            "scene_results": {
+            "metrics": aggregated,
+            "scenes": {
                 scene_id: {
                     "num_samples": len(entries),
                     "sample_ids": [entry["sample_id"] for entry in entries],
-                    "aggregated_metrics": self.compute_aggregated_metrics(entries),
+                    "metrics": self.compute_aggregated_metrics(entries),
                 }
                 for scene_id, entries in scenes.items()
             },
-            # "sample_results": self._sample_results,
         }
 
     def save_results(self, output_path: str, results: Optional[Dict[str, Any]] = None, complete: bool = True) -> str:

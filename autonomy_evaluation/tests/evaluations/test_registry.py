@@ -12,9 +12,7 @@ from __future__ import annotations
 
 import pytest
 from autonomy_evaluation.evaluations import Evaluation, EVALUATIONS, load_evaluation
-from autonomy_evaluation.evaluations.lidar_object_detection.NuscenesLidarObjectDetection import (
-    NuscenesLidarObjectDetection,
-)
+from autonomy_evaluation.evaluations.object_detection.ObjectDetection3D import ObjectDetection3D
 
 
 class TestLoadEvaluation:
@@ -27,13 +25,13 @@ class TestLoadEvaluation:
 
     def test_loads_a_registered_evaluation_by_its_name(self):
         """The registered name selects the evaluation it is registered for."""
-        assert isinstance(load_evaluation("nuscenes_lidar_object_detection"), NuscenesLidarObjectDetection)
+        assert isinstance(load_evaluation("object_detection_3d"), ObjectDetection3D)
 
     def test_loads_an_evaluation_by_its_module_and_class(self):
         """An evaluation of another package is selected as '<module>:<class>'."""
-        evaluation = load_evaluation(f"{NuscenesLidarObjectDetection.__module__}:{NuscenesLidarObjectDetection.__name__}")
+        evaluation = load_evaluation(f"{ObjectDetection3D.__module__}:{ObjectDetection3D.__name__}")
 
-        assert isinstance(evaluation, NuscenesLidarObjectDetection)
+        assert isinstance(evaluation, ObjectDetection3D)
 
     @pytest.mark.parametrize(
         "name, reason",

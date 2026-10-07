@@ -20,6 +20,8 @@
   <depend>perception_msgs_utils</depend>
   <depend>python3-shapely</depend>
   <depend>rclpy</depend>
+  <depend>tf2_perception_msgs</depend>
+  <depend>tf2_ros_py</depend>
 
   <exec_depend>autonomy_datasets_rviz_plugins</exec_depend>
   <exec_depend>perception_msgs_rviz_plugins</exec_depend>

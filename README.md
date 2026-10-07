@@ -18,7 +18,7 @@ Within the Autonomy.Benchmarks suite, **Autonomy.Evaluation** generates the metr
 
 - 🔄 **Unified ROS 2 Interface**: Evaluate any ROS system under test, on datasets, in simulation or live, using the benefits of the ROS 2 ecosystem
 - 🧩 **Pluggable Evaluations**: Select an evaluation by name, or bring your own from another package, reading any topics as inputs and, where needed, ground truth
-- 📊 **Established Metrics**: Use the provided evaluations, which follow the protocols of established challenges, with [Autonomy.Datasets](https://github.com/thinking-cars/autonomy_datasets) across different automated driving tasks
+- 📊 **Established Metrics**: Use the provided evaluations, which follow the metrics of established benchmarks, with [Autonomy.Datasets](https://github.com/thinking-cars/autonomy_datasets) across different datasets and automated driving tasks
 - ⚡ **Efficient Data Pipeline**: Works seamlessly with preprocessed Rosbag files from [Autonomy.Datasets](https://github.com/thinking-cars/autonomy_datasets) for fast execution during development
 - 🐳 **Dockerized Environment**: Reproducible setup with all dependencies included
 - 🔌 **Modular Architecture**: Easy integration with other ROS 2 packages
@@ -31,9 +31,9 @@ Detailed metric definitions and computation notes are documented in [docs/IMPLEM
 
 > [**Contributions**](docs/IMPLEMENTATION.md#adding-more-evaluations) adding more evaluations are welcome
 
-| Evaluation | Challenge | Dataset | Task |
-| --------- | --------- | ------- | ---- |
-| [**nuScenes 3D Lidar Object Detection**](docs/IMPLEMENTATION.md#3d-lidar-object-detection) | [![3D Object Detection Challenge](https://img.shields.io/badge/origin-3D_Object_Detection_Challenge-green)](https://www.nuscenes.org/object-detection) | [nuScenes](https://github.com/thinking-cars/autonomy_datasets) | 3D bounding box detection from lidar |
+| Evaluation | Datasets | Task | Preview |
+| ---------- | -------- | ---- | ------- |
+| [**3D Object Detection**](docs/IMPLEMENTATION.md#3d-object-detection) | All [Autonomy.Datasets](https://github.com/thinking-cars/autonomy_datasets) with 3D object labels | 3D bounding box detection on the classes of `perception_msgs/ObjectClassification` | ![Rviz Screenshot 3D Object Detection evaluation](./docs/assets/3d-object-detection.png)
 
 <p align="center">
   <strong>🚀 <a href="#-quick-start">Quick Start</a></strong> • <strong>💻 <a href="#-development">Development</a></strong> • <strong>📝 <a href="#-documentation">Documentation</a></strong>
@@ -51,8 +51,8 @@ Use the provided [docker-compose.yml](docker-compose.yml) to start the full pipe
 xhost +local:
 
 # pull and start Docker containers
-export COMPOSE_PROFILES="focalformer3d"  # or 'centerpoint'
-docker compose pull
+cp .env.template .env
+# configure evaluated module and dataset in the '.env' file
 docker compose up -d
 # stop containers once finished
 docker compose down
@@ -61,7 +61,7 @@ docker compose down
 Configure the evaluation and dataset via ROS launch arguments in [docker-compose.yml](docker-compose.yml):
 
 ```yaml
-command: ros2 launch autonomy_evaluation autonomy_evaluation.launch.py evaluation:=nuscenes_lidar_object_detection prediction:=$your_prediction_topic label:=$your_label_topic request_samples:=/datasets/request_samples visualize:=true
+command: ros2 launch autonomy_evaluation autonomy_evaluation.launch.py evaluation:=object_detection_3d prediction:=$your_prediction_topic label:=$your_label_topic request_samples:=/datasets/request_samples visualize:=true
 ```
 
 The evaluation node requests the samples it evaluates from the dataset node via its `request_samples` service, which publishes them and responds once they have been published. The dataset therefore publishes the next sample only once the system under test has processed the current one. As soon as all samples have been published, the node aggregates its metrics per scene of the dataset and over all evaluated samples. To evaluate samples published by others instead, e.g. by a closed-loop simulation, set `sample_source:=external`. See the [node documentation](autonomy_evaluation/README.md#autonomy_evaluation) for the topics of the evaluations, the sample settings and the results.

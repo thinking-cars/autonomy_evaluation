@@ -29,9 +29,9 @@ class TestInputRemappings:
     """Tests remapping the topics of an evaluation onto the given launch arguments."""
 
     def setup_method(self):
-        """Select the nuScenes evaluation, reading a prediction and a label with its meta information."""
+        """Select the 3D object detection, reading a prediction and a label, optionally with its meta information."""
         self.input_remappings = _launch_module().input_remappings
-        self.evaluation = load_evaluation("nuscenes_lidar_object_detection")
+        self.evaluation = load_evaluation("object_detection_3d")
 
     def test_remaps_the_topics_given_as_launch_arguments(self):
         """A topic given by a launch argument of its name is subscribed there."""

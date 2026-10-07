@@ -2,6 +2,8 @@ name: ${USER}-autonomy-evaluation
 
 services:
 
+  ## EVALUATION ##
+
   autonomy_evaluation:
     image: ghcr.io/thinking-cars/autonomy_evaluation:latest
     command:
@@ -9,7 +11,7 @@ services:
       - -ic
       - |
         ros2 launch autonomy_evaluation autonomy_evaluation.launch.py \
-          evaluation:=nuscenes_lidar_object_detection \
+          evaluation:=object_detection_3d \
           prediction:=/object_list/prediction \
           label:=/object_list/lidar_01 \
           request_samples:=/datasets/request_samples \
@@ -29,37 +31,47 @@ services:
               - driver: nvidia
                 count: all
                 capabilities: [gpu]
-  
+
+  ## DATASET ##
+
   autonomy_datasets:
-    image: ghcr.io/thinking-cars/autonomy_datasets:v1.6.0
+    image: ghcr.io/thinking-cars/autonomy_datasets:v1.7.0
     command:
       - /bin/bash
       - -ic
       - |
         ros2 launch autonomy_datasets autonomy_datasets.launch.py \
-          dataset:=nuscenes \
-          config:=/params_nuscenes.yml \
-          wait_for_ack:=true \
+          dataset:=$${DATASET} \
+          config:=/params_$${DATASET}.yml \
+          wait_for_ack:=false \
           start_paused:=true \
           target_frame_rate:=0.0 \
           rviz:=no
     environment:
       RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+      DATASET: ${DATASET}
+      HF_TOKEN: ${HF_TOKEN}
     volumes:
-      - ./config/params_nuscenes.yml:/params_nuscenes.yml
+      - ./config/params_${DATASET}.yml:/params_${DATASET}.yml
       - $DATASET_DIR:/datasets
-    depends_on:
-      - autonomy_evaluation
+
+  ## SYSTEM UNDER TEST ##
 
   autoware_lidar_centerpoint:
     profiles:
       - centerpoint
-    depends_on:
-      - autonomy_datasets
     image: ghcr.io/thinking-cars/autoware_lidar_centerpoint:latest
     environment:
       RMW_IMPLEMENTATION: rmw_fastrtps_cpp
-    command: ros2 launch autoware_lidar_centerpoint lidar_centerpoint.launch.xml model_name:=centerpoint input/pointcloud:=/lidar_01/point_cloud output/objects:=/object_list/prediction use_sim_time:=true
+    command:
+      - /bin/bash
+      - -ic
+      - |
+        ros2 launch autoware_lidar_centerpoint lidar_centerpoint.launch.xml \
+          model_name:=centerpoint_tiny \
+          input/pointcloud:=/lidar_01/point_cloud \
+          output/objects:=/object_list/prediction \
+          use_sim_time:=true
     deploy:
       resources:
         reservations:

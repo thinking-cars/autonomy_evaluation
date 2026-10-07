@@ -69,10 +69,17 @@ class ClosestObjectEvaluation(Evaluation):
 class _TopicsEvaluation(CountingEvaluation):
     """Counting evaluation with freely declared topics, to test their validation."""
 
-    def __init__(self, inputs: Dict[str, Any], ground_truth: Dict[str, Any], derived_topics=None) -> None:
+    def __init__(
+        self,
+        inputs: Dict[str, Any],
+        ground_truth: Dict[str, Any],
+        derived_topics=None,
+        optional_ground_truth=None,
+    ) -> None:
         """Declare the given topics."""
         super().__init__()
         self._inputs, self._ground_truth, self._derived_topics = inputs, ground_truth, derived_topics or {}
+        self._optional_ground_truth = optional_ground_truth or {}
 
     def required_inputs(self) -> Dict[str, Any]:
         """Declare the given inputs."""
@@ -81,6 +88,10 @@ class _TopicsEvaluation(CountingEvaluation):
     def required_ground_truth(self) -> Dict[str, Any]:
         """Declare the given ground truth."""
         return self._ground_truth
+
+    def optional_ground_truth(self) -> Dict[str, Any]:
+        """Declare the given optional ground truth."""
+        return self._optional_ground_truth
 
     def derived_topics(self):
         """Declare the given derived topics."""
@@ -129,6 +140,35 @@ class TestTopics:
         with pytest.raises(ValueError, match="derives the topic"):
             _TopicsEvaluation({"prediction": object}, {"label": object}, derived_topics).all_inputs()
 
+    def test_optional_ground_truth_follows_the_required_topics(self):
+        """Optional ground truth is read next to the required topics, after them."""
+        evaluation = _TopicsEvaluation(
+            {"prediction": object}, {"label": object}, optional_ground_truth={"label_meta_info": object}
+        )
+
+        assert list(evaluation.all_inputs()) == ["prediction", "label", "label_meta_info"]
+
+    def test_rejects_a_topic_declared_as_required_and_as_optional(self):
+        """A topic is either waited for or not, so it cannot be required and optional at once."""
+        with pytest.raises(ValueError, match="as ground truth and as optional ground truth"):
+            _TopicsEvaluation({"prediction": object}, {"label": object}, optional_ground_truth={"label": object}).all_inputs()
+
+    def test_rejects_an_evaluation_of_optional_topics_only(self):
+        """A sample is only evaluated once its required topics have been received, so at least one is needed."""
+        with pytest.raises(ValueError, match="no topic"):
+            _TopicsEvaluation({}, {}, optional_ground_truth={"label": object}).all_inputs()
+
+    def test_optional_topic_may_be_derived_from_a_required_one(self):
+        """Meta information that not every dataset publishes follows the topic of the labels it belongs to."""
+        evaluation = _TopicsEvaluation(
+            {"prediction": object},
+            {"label": object},
+            derived_topics={"label_meta_info": ("label", "/meta_info")},
+            optional_ground_truth={"label_meta_info": object},
+        )
+
+        assert "label_meta_info" in evaluation.all_inputs()
+
 
 class TestSampleResults:
     """Tests recording samples with the scene of the dataset they belong to."""
@@ -169,13 +209,13 @@ class TestFinalize:
 
         assert results["num_samples"] == 3
         assert results["num_scenes"] == 2
-        assert results["aggregated_metrics"] == {"num_predictions": 7, "num_labels": 9}
-        assert results["scene_results"]["scene_a"] == {
+        assert results["metrics"] == {"num_predictions": 7, "num_labels": 9}
+        assert results["scenes"]["scene_a"] == {
             "num_samples": 2,
             "sample_ids": ["0", "1"],
-            "aggregated_metrics": {"num_predictions": 3, "num_labels": 4},
+            "metrics": {"num_predictions": 3, "num_labels": 4},
         }
-        assert results["scene_results"]["scene_b"]["aggregated_metrics"] == {"num_predictions": 4, "num_labels": 5}
+        assert results["scenes"]["scene_b"]["metrics"] == {"num_predictions": 4, "num_labels": 5}
         # The metrics of the single samples are no longer reported alongside the aggregated
         # results, while 'sample_results' is commented out in Evaluation.finalize()
         # assert [entry["metrics"] for entry in results["sample_results"]] == [
@@ -194,9 +234,9 @@ class TestFinalize:
             ]
         ).finalize()
 
-        assert results["scene_results"]["scene_a"]["sample_ids"] == ["0", "2"]
-        assert results["scene_results"]["scene_a"]["aggregated_metrics"]["num_predictions"] == 5
-        assert results["scene_results"]["scene_b"]["sample_ids"] == ["1"]
+        assert results["scenes"]["scene_a"]["sample_ids"] == ["0", "2"]
+        assert results["scenes"]["scene_a"]["metrics"]["num_predictions"] == 5
+        assert results["scenes"]["scene_b"]["sample_ids"] == ["1"]
 
     def test_samples_without_a_scene_are_only_aggregated_over_the_evaluation(self):
         """A sample that cannot be attributed to a scene still counts for the whole evaluation."""
@@ -204,8 +244,8 @@ class TestFinalize:
 
         assert results["num_samples"] == 2
         assert results["num_scenes"] == 1
-        assert results["aggregated_metrics"]["num_predictions"] == 3
-        assert results["scene_results"]["scene_a"]["aggregated_metrics"]["num_predictions"] == 1
+        assert results["metrics"]["num_predictions"] == 3
+        assert results["scenes"]["scene_a"]["metrics"]["num_predictions"] == 1
 
     def test_aggregates_an_evaluation_of_inputs_only(self):
         """Samples of an evaluation without ground truth are recorded from their inputs alone."""
@@ -215,15 +255,15 @@ class TestFinalize:
 
         results = evaluation.finalize()
 
-        assert results["aggregated_metrics"] == {"min_distance": 2.5}
-        assert results["scene_results"]["scene_a"]["num_samples"] == 2
+        assert results["metrics"] == {"min_distance": 2.5}
+        assert results["scenes"]["scene_a"]["num_samples"] == 2
 
     def test_reports_no_scene_without_recorded_scenes(self):
         """Samples recorded without a scene aggregate to no scene results at all."""
         results = _evaluation_of([("0", None, 1, 0)]).finalize()
 
         assert results["num_scenes"] == 0
-        assert results["scene_results"] == {}
+        assert results["scenes"] == {}
 
 
 class TestSaveResults:
@@ -236,8 +276,8 @@ class TestSaveResults:
         output_path = evaluation.save_results(str(tmp_path / "results" / "counting.json"))
 
         stored = json.loads(open(output_path).read())
-        assert stored["aggregated_metrics"] == {"num_predictions": 3, "num_labels": 3}
-        assert sorted(stored["scene_results"]) == ["scene_a", "scene_b"]
+        assert stored["metrics"] == {"num_predictions": 3, "num_labels": 3}
+        assert sorted(stored["scenes"]) == ["scene_a", "scene_b"]
         # The single samples are no longer written alongside the aggregated
         # results, while 'sample_results' is commented out in Evaluation.finalize()
         # assert [entry["sample_id"] for entry in stored["sample_results"]] == ["0", "1"]
@@ -249,7 +289,7 @@ class TestSaveResults:
 
         output_path = evaluation.save_results(str(tmp_path / "counting.json"), results=results)
 
-        assert json.loads(open(output_path).read())["aggregated_metrics"] == results["aggregated_metrics"]
+        assert json.loads(open(output_path).read())["metrics"] == results["metrics"]
 
 
 class TestIncompleteResults:
@@ -266,7 +306,7 @@ class TestIncompleteResults:
         assert results["complete"] is False
         # the samples that were evaluated are still reported
         assert results["num_samples"] == 1
-        assert results["aggregated_metrics"] == {"num_predictions": 1, "num_labels": 1}
+        assert results["metrics"] == {"num_predictions": 1, "num_labels": 1}
 
     def test_writes_incomplete_results_to_the_results_file(self, tmp_path):
         """The results file of an interrupted evaluation marks the results it holds as incomplete."""
@@ -276,7 +316,7 @@ class TestIncompleteResults:
 
         stored = json.loads(open(output_path).read())
         assert stored["complete"] is False
-        assert stored["aggregated_metrics"] == {"num_predictions": 1, "num_labels": 1}
+        assert stored["metrics"] == {"num_predictions": 1, "num_labels": 1}
 
     def test_written_results_keep_the_flag_they_were_finalized_with(self, tmp_path):
         """A given payload is written as it is, marked the way it was finalized."""

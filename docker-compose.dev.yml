@@ -2,6 +2,8 @@ name: ${USER}-autonomy-evaluation
 
 services:
 
+  ## EVALUATION ##
+
   autonomy_evaluation:
     extends:
       file: docker-compose.yml
@@ -12,6 +14,8 @@ services:
       - .:/docker-ros/ws/src/target
       - ${HOME}/.claude:/root/.claude
 
+  ## DATASET ##
+
   autonomy_datasets:
     extends:
       file: docker-compose.yml
@@ -21,6 +25,8 @@ services:
     # volumes:
     #   - ../autonomy_datasets:/docker-ros/ws/src/target
     #   - ${HOME}/.claude:/root/.claude
+
+  ## SYSTEM UNDER TEST ##
 
   autoware_lidar_centerpoint:
     extends:

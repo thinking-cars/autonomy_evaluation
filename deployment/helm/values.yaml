@@ -9,7 +9,7 @@ openadservice:
     REQUEST_SAMPLES: ~/request_samples
     LOG_LEVEL: info
     USE_SIM_TIME: true
-    EVALUATION: nuscenes_lidar_object_detection
+    EVALUATION: object_detection_3d
     VISUALIZE: false
     SAMPLE_SOURCE: dataset
     SYNC_TOLERANCE: 0.0

@@ -8,8 +8,9 @@ covered by running it against a dataset. Tested here are the parsing of the samp
 as an unparsable value stops the node, the topics the inputs of an evaluation are subscribed on,
 the stamping of received messages, the matching of the received input messages into the samples
 to evaluate, which has to hold up when the dataset continues with a scene that was recorded before
-the scene played before it and has to match topics of a simulation within a tolerance, the
-evaluation of a sample, which requests the next samples unless others publish them, advancing the
+the scene played before it, has to match topics of a simulation within a tolerance and must not wait
+for an optional topic that is not published, the evaluation of a sample, which requests the next
+samples unless others publish them, advancing the
 evaluation until it finishes, which it also has to once the dataset node has shut down after its
 last sample, and the finalization of the results, which reports the samples of an interrupted
 evaluation as incomplete.
@@ -37,14 +38,21 @@ def _message(stamp: tuple[int, int]) -> SimpleNamespace:
     return SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(sec=stamp[0], nanosec=stamp[1])))
 
 
-def _synchronizer(queue_size: int = 10, topics=None, tolerance: float = 0.0) -> tuple[SampleSynchronizer, list]:
-    """Create a synchronizer of the evaluation inputs next to the list of the messages of the samples it matched."""
+def _synchronizer(
+    queue_size: int = 10, topics=None, tolerance: float = 0.0, optional_topics=(), published_topics=None
+) -> tuple[SampleSynchronizer, list]:
+    """Create a synchronizer of the evaluation inputs next to the list of the messages of the samples it matched.
+
+    Of the optional topics, those in ``published_topics`` (all by default) have a publisher.
+    """
     matched_samples: list = []
     synchronizer = SampleSynchronizer(
         topics or _TOPICS,
         callback=lambda stamp, messages: matched_samples.append(tuple(messages.values())),
         queue_size=queue_size,
         tolerance=tolerance,
+        optional_topics=optional_topics,
+        expects_message=lambda topic: published_topics is None or topic in published_topics,
     )
     return synchronizer, matched_samples
 
@@ -194,6 +202,44 @@ class TestSampleSynchronizer:
         assert matched_samples == []
         assert len(synchronizer.incomplete_samples) == 2
 
+    def test_evaluates_a_sample_without_an_optional_input_that_is_not_published(self):
+        """A dataset that publishes no meta information is evaluated without it."""
+        synchronizer, matched_samples = _synchronizer(optional_topics=["label_meta_info"], published_topics=[])
+
+        messages = _publish_sample(synchronizer, _NEXT_SCENE[0], topics=["prediction", "label"])
+
+        assert matched_samples == [(messages["prediction"], messages["label"], None)]
+        assert not synchronizer.incomplete_samples
+
+    def test_waits_for_an_optional_input_that_is_published(self):
+        """The meta information of a dataset that publishes it is evaluated with its sample."""
+        synchronizer, matched_samples = _synchronizer(optional_topics=["label_meta_info"], published_topics=["label_meta_info"])
+
+        messages = _publish_sample(synchronizer, _NEXT_SCENE[0], topics=["prediction", "label"])
+
+        assert matched_samples == []
+
+        meta_info = _message(_NEXT_SCENE[0])
+        synchronizer.add("label_meta_info", meta_info, _NEXT_SCENE[0])
+
+        assert matched_samples == [(messages["prediction"], messages["label"], meta_info)]
+
+    def test_keeps_an_optional_message_received_before_the_required_ones(self):
+        """Meta information published with the labels joins the sample once the prediction completes it."""
+        synchronizer, matched_samples = _synchronizer(optional_topics=["label_meta_info"], published_topics=[])
+
+        messages = _publish_sample(synchronizer, _NEXT_SCENE[0], topics=["label", "label_meta_info", "prediction"])
+
+        assert matched_samples == [tuple(messages[topic] for topic in _TOPICS)]
+
+    def test_optional_inputs_never_complete_a_sample_on_their_own(self):
+        """A sample is only evaluated once all its required inputs have been received."""
+        synchronizer, matched_samples = _synchronizer(optional_topics=["label_meta_info"], published_topics=[])
+
+        _publish_sample(synchronizer, _NEXT_SCENE[0], topics=["label", "label_meta_info"])
+
+        assert matched_samples == []
+
     def test_matches_the_closest_message_of_a_topic_published_at_a_higher_rate(self):
         """A message of a slower topic joins the message of a faster topic whose stamp is closest to its own."""
         synchronizer, matched_samples = _synchronizer(topics=["ego_data", "objects"], tolerance=0.05)
@@ -232,7 +278,7 @@ class _FakeEvaluationHandler:
     def finalize(self, complete: bool = True) -> dict:
         """Report results that are marked the way the node asked for."""
         self.finalized_complete = complete
-        return {"num_samples": 2, "num_scenes": 1, "complete": complete, "aggregated_metrics": {}}
+        return {"num_samples": 2, "num_scenes": 1, "complete": complete, "metrics": {}}
 
     def save_results(self, output_path: str, results: dict = None) -> str:
         """Keep the results instead of writing them to a file."""
@@ -499,6 +545,35 @@ class TestInputTopic:
         node = self._node({"label": "/object_list/lidar_01", "label_meta_info": "/meta_info"})
 
         assert AutonomyEvaluation.input_topic(node, "label_meta_info", self._DERIVED_TOPICS) == "label_meta_info"
+
+
+class TestIsPublished:
+    """Tests deciding whether a sample waits for the message of an optional input."""
+
+    @staticmethod
+    def _node(publishers: dict) -> SimpleNamespace:
+        """Stub a node whose subscribed topics have the given numbers of publishers."""
+        return SimpleNamespace(
+            data_subscriptions={"label_meta_info": SimpleNamespace(topic_name="/object_list/lidar_01/meta_info")},
+            count_publishers=lambda topic: publishers.get(topic, 0),
+            unpublished_optional_topics=set(),
+            get_logger=lambda logger=_FakeLogger(): logger,
+        )
+
+    def test_waits_for_an_optional_input_that_has_a_publisher(self):
+        """The meta information of a dataset that publishes it is awaited."""
+        node = self._node({"/object_list/lidar_01/meta_info": 1})
+
+        assert AutonomyEvaluation.is_published(node, "label_meta_info") is True
+
+    def test_logs_once_that_an_optional_input_is_not_published(self):
+        """Evaluating without an unpublished optional input is reported once, not for every sample."""
+        node = self._node({})
+
+        assert AutonomyEvaluation.is_published(node, "label_meta_info") is False
+        assert AutonomyEvaluation.is_published(node, "label_meta_info") is False
+        assert len(node.get_logger().messages) == 1
+        assert "label_meta_info" in node.get_logger().messages[0]
 
 
 def _node(num_evaluated_samples: int = 2, results_path: str = "/results/evaluation.json") -> SimpleNamespace:
