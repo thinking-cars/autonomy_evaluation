@@ -1,7 +1,7 @@
 apiVersion: v2
 name: autonomy-evaluation
-version: 1.0.0
-appVersion: 1.0.0
+version: 2.0.0
+appVersion: 2.0.0
 description: Metrics-based evaluation of automated driving modules, generating the evidence for benchmarking automated driving deployments
 dependencies:
   - repository: oci://ghcr.io/openads-project/openads-helm

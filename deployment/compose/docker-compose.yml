@@ -1,7 +1,7 @@
 services:
 
   autonomy-evaluation:
-    image: ghcr.io/thinking-cars/autonomy_evaluation:v1.0.0
+    image: ghcr.io/thinking-cars/autonomy_evaluation:v2.0.0
     environment:
       # --- name ------
       NAMESPACE: /
