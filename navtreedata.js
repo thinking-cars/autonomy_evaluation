@@ -24,8 +24,8 @@
 */
 var NAVTREE =
 [
-  [ "autonomy_benchmarks", "index.html", [
-    [ "Supported Benchmarks", "index.html#autotoc_md1", null ],
+  [ "autonomy_evaluation", "index.html", [
+    [ "Supported Evaluations", "index.html#autotoc_md1", null ],
     [ "🚀 Quick Start", "index.html#autotoc_md2", null ],
     [ "💻 Development", "index.html#autotoc_md3", [
       [ "Set up Development Environment", "index.html#autotoc_md4", null ],

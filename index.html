@@ -5,7 +5,7 @@
 <meta http-equiv="X-UA-Compatible" content="IE=11"/>
 <meta name="generator" content="Doxygen 1.12.0"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>autonomy_benchmarks: autonomy_benchmarks</title>
+<title>autonomy_evaluation: autonomy_evaluation</title>
 <link href="tabs.css" rel="stylesheet" type="text/css"/>
 <script type="text/javascript" src="jquery.js"></script>
 <script type="text/javascript" src="dynsections.js"></script>
@@ -28,7 +28,7 @@
  <tbody>
  <tr id="projectrow">
   <td id="projectalign">
-   <div id="projectname">autonomy_benchmarks<span id="projectnumber">&#160;v1.0.0</span>
+   <div id="projectname">autonomy_evaluation<span id="projectnumber">&#160;v2.0.0</span>
    </div>
   </td>
  </tr>
@@ -97,63 +97,65 @@ $(function(){initNavTree('index.html',''); initResizable(true); });
 </div>
 
 <div><div class="header">
-  <div class="headertitle"><div class="title">autonomy_benchmarks </div></div>
+  <div class="headertitle"><div class="title">autonomy_evaluation </div></div>
 </div><!--header-->
 <div class="contents">
 <div class="textblock"><p><a class="anchor" id="md_README"></a></p>
 <p align="center"></p>
-<p><a href="https://www.ros.org"><img src="https://img.shields.io/badge/ROS 2-jazzy-22314e" alt="" class="inline"/></a> <a href="https://github.com/thinking-cars/autonomy_benchmarks/releases/latest"><img src="https://img.shields.io/github/v/release/thinking-cars/autonomy_benchmarks" alt="" class="inline"/></a> <a href="https://github.com/thinking-cars/autonomy_benchmarks/blob/main/LICENSE"><img src="https://img.shields.io/github/license/thinking-cars/autonomy_benchmarks" alt="" class="inline"/></a> <br  />
- <a href="https://github.com/thinking-cars/autonomy_benchmarks/actions/workflows/docker-ros.yml"><img src="https://github.com/thinking-cars/autonomy_benchmarks/actions/workflows/docker-ros.yml/badge.svg" alt="" style="pointer-events: none;" class="inline"/></a> <a href="https://github.com/thinking-cars/autonomy_benchmarks/actions/workflows/compose-oci.yml"><img src="https://github.com/thinking-cars/autonomy_benchmarks/actions/workflows/compose-oci.yml/badge.svg" alt="" style="pointer-events: none;" class="inline"/></a> <a href="https://thinking-cars.github.io/autonomy_benchmarks"><img src="https://github.com/thinking-cars/autonomy_benchmarks/actions/workflows/docs.yml/badge.svg" alt="" style="pointer-events: none;" class="inline"/></a> <a href="https://github.com/thinking-cars/autonomy_benchmarks/actions/workflows/consistency.yml"><img src="https://github.com/thinking-cars/autonomy_benchmarks/actions/workflows/consistency.yml/badge.svg" alt="" style="pointer-events: none;" class="inline"/></a> </p>
+<p><a href="https://www.ros.org"><img src="https://img.shields.io/badge/ROS 2-jazzy-22314e" alt="" class="inline"/></a> <a href="https://github.com/thinking-cars/autonomy_evaluation/releases/latest"><img src="https://img.shields.io/github/v/release/thinking-cars/autonomy_evaluation" alt="" class="inline"/></a> <a href="https://github.com/thinking-cars/autonomy_evaluation/blob/main/LICENSE"><img src="https://img.shields.io/github/license/thinking-cars/autonomy_evaluation" alt="" class="inline"/></a> <br  />
+ <a href="https://github.com/thinking-cars/autonomy_evaluation/actions/workflows/docker-ros.yml"><img src="https://github.com/thinking-cars/autonomy_evaluation/actions/workflows/docker-ros.yml/badge.svg" alt="" style="pointer-events: none;" class="inline"/></a> <a href="https://github.com/thinking-cars/autonomy_evaluation/actions/workflows/compose-oci.yml"><img src="https://github.com/thinking-cars/autonomy_evaluation/actions/workflows/compose-oci.yml/badge.svg" alt="" style="pointer-events: none;" class="inline"/></a> <a href="https://github.com/thinking-cars/autonomy_evaluation/actions/workflows/helm-oci.yml"><img src="https://github.com/thinking-cars/autonomy_evaluation/actions/workflows/helm-oci.yml/badge.svg" alt="" style="pointer-events: none;" class="inline"/></a> <a href="https://thinking-cars.github.io/autonomy_evaluation"><img src="https://github.com/thinking-cars/autonomy_evaluation/actions/workflows/docs.yml/badge.svg" alt="" style="pointer-events: none;" class="inline"/></a> <a href="https://github.com/thinking-cars/autonomy_evaluation/actions/workflows/consistency.yml"><img src="https://github.com/thinking-cars/autonomy_evaluation/actions/workflows/consistency.yml/badge.svg" alt="" style="pointer-events: none;" class="inline"/></a> </p>
 <blockquote class="doxtable">
-<p>&zwj;This repository will be part of the <b>Autonomy.Hub Ecosystem</b> </p>
+<p>&zwj;This repository is part of the <b>Autonomy.Benchmarks</b> suite of the <b>Autonomy.Hub Ecosystem</b> </p>
 </blockquote>
-<p>As part of the Autonomy.Hub Ecosystem, <b>Autonomy.Benchmarks</b> enables the Automated Driving community to easily benchmark their automated driving building blocks across different tasks and datasets:</p>
+<p>Within the Autonomy.Benchmarks suite, <b>Autonomy.Evaluation</b> generates the metrics-based evidence for benchmarking automated driving deployments. It evaluates arbitrary ROS systems under test, either from their own topics alone, e.g. a closed-loop planner by its time to collision, or against ground truth, e.g. a perception algorithm against the labels of a dataset replayed by <a href="https://github.com/thinking-cars/autonomy_datasets">Autonomy.Datasets</a>, and reports the resulting metrics per scene and over all evaluated samples:</p>
 <ul>
-<li>🔄 <b>Unified ROS 2 Interface</b>: Work with multiple datasets using the benefits of the ROS 2 ecosystem</li>
-<li>📊 <b>Comprehensive Benchmarks</b>: Use the provided benchmarks with <a href="https://github.com/thinking-cars/autonomy_datasets">Autonomy.Datasets</a> to benchmark building blocks across different automated driving tasks</li>
+<li>🔄 <b>Unified ROS 2 Interface</b>: Evaluate any ROS system under test, on datasets, in simulation or live, using the benefits of the ROS 2 ecosystem</li>
+<li>🧩 <b>Pluggable Evaluations</b>: Select an evaluation by name, or bring your own from another package, reading any topics as inputs and, where needed, ground truth</li>
+<li>📊 <b>Established Metrics</b>: Use the provided evaluations, which follow the metrics of established benchmarks, with <a href="https://github.com/thinking-cars/autonomy_datasets">Autonomy.Datasets</a> across different datasets and automated driving tasks</li>
 <li>⚡ <b>Efficient Data Pipeline</b>: Works seamlessly with preprocessed Rosbag files from <a href="https://github.com/thinking-cars/autonomy_datasets">Autonomy.Datasets</a> for fast execution during development</li>
 <li>🐳 <b>Dockerized Environment</b>: Reproducible setup with all dependencies included</li>
 <li>🔌 <b>Modular Architecture</b>: Easy integration with other ROS 2 packages</li>
 </ul>
 <h1><a class="anchor" id="autotoc_md1"></a>
-Supported Benchmarks</h1>
-<p>This repository supports various automated driving evaluation benchmarks.</p>
+Supported Evaluations</h1>
+<p>This repository supports evaluations of various automated driving tasks.</p>
 <p>Detailed metric definitions and computation notes are documented in <a class="el" href="md_docs_2IMPLEMENTATION.html">docs/IMPLEMENTATION.md</a>.</p>
 <blockquote class="doxtable">
-<p>&zwj;<a href="docs/IMPLEMENTATION.md#adding-more-benchmarks"><b>Contributions</b></a> adding more benchmarks are welcome </p>
+<p>&zwj;<a href="docs/IMPLEMENTATION.md#adding-more-evaluations"><b>Contributions</b></a> adding more evaluations are welcome </p>
 </blockquote>
 <table class="markdownTable">
 <tr class="markdownTableHead">
-<th class="markdownTableHeadNone">Benchmark   </th><th class="markdownTableHeadNone">Challenge   </th><th class="markdownTableHeadNone">Dataset   </th><th class="markdownTableHeadNone">Task    </th></tr>
+<th class="markdownTableHeadNone">Evaluation   </th><th class="markdownTableHeadNone">Datasets   </th><th class="markdownTableHeadNone">Task   </th><th class="markdownTableHeadNone">Preview    </th></tr>
 <tr class="markdownTableRowOdd">
-<td class="markdownTableBodyNone"><a href="docs/IMPLEMENTATION.md#3d-lidar-object-detection"><b>nuScenes 3D Lidar Object Detection</b></a>   </td><td class="markdownTableBodyNone"><a href="https://www.nuscenes.org/object-detection"><img src="https://img.shields.io/badge/origin-3D_Object_Detection_Challenge-green" alt="3D Object Detection Challenge" class="inline"/></a>   </td><td class="markdownTableBodyNone"><a href="https://github.com/thinking-cars/autonomy_datasets">nuScenes</a>   </td><td class="markdownTableBodyNone">3D bounding box detection from lidar   </td></tr>
+<td class="markdownTableBodyNone"><a href="docs/IMPLEMENTATION.md#3d-object-detection"><b>3D Object Detection</b></a>   </td><td class="markdownTableBodyNone">All <a href="https://github.com/thinking-cars/autonomy_datasets">Autonomy.Datasets</a> with 3D object labels   </td><td class="markdownTableBodyNone">3D bounding box detection on the classes of <code>perception_msgs/ObjectClassification</code>   </td><td class="markdownTableBodyNone"><img src="./docs/assets/3d-object-detection.png" alt="Rviz Screenshot 3D Object Detection evaluation" class="inline"/>   </td></tr>
 </table>
 <p><b>🚀 <a href="#-quick-start">Quick Start</a></b> • <b>💻 <a href="#-development">Development</a></b> • <b>📝 <a href="#-documentation">Documentation</a></b> </p>
 <h1><a class="anchor" id="autotoc_md2"></a>
 🚀 Quick Start</h1>
 <p>Clone <a href="https://github.com/thinking-cars/autonomy_datasets">autonomy_datasets</a> and follow its setup instructions to prepare your dataset.</p>
-<p>Use the provided <a href="docker-compose.yml">docker-compose.yml</a> to start the full pipeline — dataset publisher, system-under-test, and benchmark node:</p>
+<p>Use the provided <a href="docker-compose.yml">docker-compose.yml</a> to start the full pipeline — dataset publisher, system under test, and evaluation node:</p>
 <div class="fragment"><div class="line"># enable GUI output from Docker container</div>
 <div class="line">xhost +local:</div>
 <div class="line"> </div>
 <div class="line"># pull and start Docker containers</div>
-<div class="line">export COMPOSE_PROFILES=&quot;focalformer3d&quot;  # or &#39;centerpoint&#39;</div>
-<div class="line">docker compose pull</div>
+<div class="line">cp .env.template .env</div>
+<div class="line"># configure evaluated module and dataset in the &#39;.env&#39; file</div>
 <div class="line">docker compose up -d</div>
 <div class="line"># stop containers once finished</div>
 <div class="line">docker compose down</div>
-</div><!-- fragment --><p>Configure the benchmark task and dataset via ROS launch arguments in <a href="docker-compose.yml">docker-compose.yml</a>:</p>
-<div class="fragment"><div class="line">command: ros2 launch autonomy_benchmarks autonomy_benchmarks.launch.py benchmark:=nuscenes_lidar_object_detection prediction:=$your_prediction_topic label:=$your_label_topic</div>
-</div><!-- fragment --><h1><a class="anchor" id="autotoc_md3"></a>
+</div><!-- fragment --><p>Configure the evaluation and dataset via ROS launch arguments in <a href="docker-compose.yml">docker-compose.yml</a>:</p>
+<div class="fragment"><div class="line">command: ros2 launch autonomy_evaluation autonomy_evaluation.launch.py evaluation:=object_detection_3d prediction:=$your_prediction_topic label:=$your_label_topic request_samples:=/datasets/request_samples visualize:=true</div>
+</div><!-- fragment --><p>The evaluation node requests the samples it evaluates from the dataset node via its <code>request_samples</code> service, which publishes them and responds once they have been published. The dataset therefore publishes the next sample only once the system under test has processed the current one. As soon as all samples have been published, the node aggregates its metrics per scene of the dataset and over all evaluated samples. To evaluate samples published by others instead, e.g. by a closed-loop simulation, set <code>sample_source:=external</code>. See the <a href="autonomy_evaluation/README.md#autonomy_evaluation">node documentation</a> for the topics of the evaluations, the sample settings and the results.</p>
+<h1><a class="anchor" id="autotoc_md3"></a>
 💻 Development</h1>
 <h2><a class="anchor" id="autotoc_md4"></a>
 Set up Development Environment</h2>
 <ol type="1">
-<li>Clone the repository. <div class="fragment"><div class="line">git clone https://github.com/thinking-cars/autonomy_benchmarks.git</div>
+<li>Clone the repository. <div class="fragment"><div class="line">git clone https://github.com/thinking-cars/autonomy_evaluation.git</div>
 </div><!-- fragment --></li>
 </ol>
 <ol type="1">
-<li>Initialize the <a href="https://github.com/openads-project/openads-dev-environment"><code>.openads-dev-environment</code></a> submodule containing development environment configuration. <div class="fragment"><div class="line">cd autonomy_benchmarks</div>
+<li>Initialize the <a href="https://github.com/openads-project/openads-dev-environment"><code>.openads-dev-environment</code></a> submodule containing development environment configuration. <div class="fragment"><div class="line">cd autonomy_evaluation</div>
 <div class="line">git submodule update --init --recursive</div>
 </div><!-- fragment --></li>
 </ol>
@@ -186,12 +188,12 @@ Run Tests</h2>
 <div class="line">colcon test-result --verbose</div>
 </div><!-- fragment --><h1><a class="anchor" id="autotoc_md7"></a>
 📝 Documentation</h1>
-<p>Package and node interfaces are documented in the respective package READMEs listed below. Implementation details are found in the <a href="https://thinking-cars.github.io/autonomy_benchmarks">Source Code Documentation</a>.</p>
+<p>Package and node interfaces are documented in the respective package READMEs listed below. Implementation details are found in the <a href="https://thinking-cars.github.io/autonomy_evaluation">Source Code Documentation</a>.</p>
 <table class="markdownTable">
 <tr class="markdownTableHead">
 <th class="markdownTableHeadNone">Package   </th><th class="markdownTableHeadNone">Description    </th></tr>
 <tr class="markdownTableRowOdd">
-<td class="markdownTableBodyNone">autonomy_benchmarks   </td><td class="markdownTableBodyNone">Benchmarking suite for automated driving tasks   </td></tr>
+<td class="markdownTableBodyNone">autonomy_evaluation   </td><td class="markdownTableBodyNone">Metrics-based evaluation of automated driving modules, generating the evidence for benchmarking automated driving deployments   </td></tr>
 </table>
 <h1><a class="anchor" id="autotoc_md8"></a>
 ⚖️ Licensing</h1>

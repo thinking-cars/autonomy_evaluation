@@ -5,7 +5,7 @@
 <meta http-equiv="X-UA-Compatible" content="IE=11"/>
 <meta name="generator" content="Doxygen 1.12.0"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>autonomy_benchmarks: Implementation Details</title>
+<title>autonomy_evaluation: Implementation Details</title>
 <link href="tabs.css" rel="stylesheet" type="text/css"/>
 <script type="text/javascript" src="jquery.js"></script>
 <script type="text/javascript" src="dynsections.js"></script>
@@ -28,7 +28,7 @@
  <tbody>
  <tr id="projectrow">
   <td id="projectalign">
-   <div id="projectname">autonomy_benchmarks<span id="projectnumber">&#160;v1.0.0</span>
+   <div id="projectname">autonomy_evaluation<span id="projectnumber">&#160;v2.0.0</span>
    </div>
   </td>
  </tr>
@@ -101,141 +101,172 @@ $(function(){initNavTree('md_docs_2IMPLEMENTATION.html',''); initResizable(true)
 </div><!--header-->
 <div class="contents">
 <div class="textblock"><p><a class="anchor" id="autotoc_md10"></a></p>
-<p>This repository supports the following benchmarks for object detection in automated driving systems:</p>
+<p>This repository supports the following evaluations of automated driving systems:</p>
 <ul>
-<li>nuScenes Challenge: 3D lidar object detection</li>
+<li>3D Object Detection: 3D bounding-box object detection on the classes of <code>perception_msgs/ObjectClassification</code></li>
 </ul>
 <h2><a class="anchor" id="autotoc_md11"></a>
-nuScenes Challenge</h2>
-<blockquote class="doxtable">
-<p>&zwj;<a href="https://www.nuscenes.org/">nuScenes</a> </p>
-</blockquote>
-<p>The nuScenes dataset is not redistributed here. You must download it under the <a href="https://www.nuscenes.org/terms-of-use">nuScenes Terms of Use</a> and make it available via the companion <a href="https://github.com/thinking-cars/autonomy_datasets">autonomy_datasets</a> package.</p>
-<h3><a class="anchor" id="autotoc_md12"></a>
-3D Lidar Object Detection</h3>
-<p>Supported Datasets:</p>
+3D Object Detection</h2>
+<p><img src="./assets/3d-object-detection.png" alt="Rviz Screenshot 3D Object Detection evaluation" class="inline"/></p>
+<p>Evaluates 3D bounding boxes, e.g. detected in lidar point clouds, camera images or both, against the labels of a dataset. Predictions and labels are compared on the classes of <a href="https://github.com/ika-rwth-aachen/perception_interfaces/blob/main/perception_msgs/msg/ObjectClassification.msg"><code>perception_msgs/ObjectClassification</code></a>, so a model can be evaluated on datasets of different class taxonomies. The metrics follow the <a href="https://www.nuscenes.org/object-detection">nuScenes detection benchmark</a>, which serves as reference; the evaluation is no implementation of the official nuScenes challenge and deviates from it as listed below.</p>
+<p><b>Supported datasets:</b> every dataset of <a href="https://github.com/thinking-cars/autonomy_datasets">autonomy_datasets</a> that publishes 3D object labels:</p>
 <ul>
-<li><a href="https://github.com/thinking-cars/autonomy_datasets/blob/main/docs/IMPLEMENTATION.md#nuscenes-dataset">nuScenes Dataset</a></li>
+<li><a href="https://github.com/thinking-cars/autonomy_datasets/blob/main/docs/IMPLEMENTATION.md#waymo-open-dataset">Waymo Open Dataset</a></li>
+<li><a href="https://github.com/thinking-cars/autonomy_datasets/blob/main/docs/IMPLEMENTATION.md#nuscenes-dataset">nuScenes</a></li>
+<li><a href="https://github.com/thinking-cars/autonomy_datasets/blob/main/docs/IMPLEMENTATION.md#man-truckscenes-dataset">MAN TruckScenes</a></li>
+<li><a href="https://github.com/thinking-cars/autonomy_datasets/blob/main/docs/IMPLEMENTATION.md#nvidia-physicalai-av-dataset">NVIDIA PhysicalAI AV Dataset</a></li>
+<li><a href="https://github.com/thinking-cars/autonomy_datasets/blob/main/docs/IMPLEMENTATION.md#driving-dataset">DrivIng</a></li>
+<li><a href="https://github.com/thinking-cars/autonomy_datasets/blob/main/docs/IMPLEMENTATION.md#tum-traffic-dataset">TUM Traffic</a></li>
+<li><a href="https://github.com/thinking-cars/autonomy_datasets/blob/main/docs/IMPLEMENTATION.md#zenseact-open-dataset">Zenseact Open Dataset</a></li>
+<li><a href="https://github.com/thinking-cars/autonomy_datasets/blob/main/docs/IMPLEMENTATION.md#fzi-aura-dataset">FZI-AURA</a></li>
 </ul>
-<blockquote class="doxtable">
-<p>&zwj;This benchmark uses <a href="https://github.com/thinking-cars/autonomy_datasets/blob/main/docs/IMPLEMENTATION.md#nuscenes-dataset">nuScenes Dataset</a> via the <a href="https://github.com/thinking-cars/autonomy_datasets">autonomy_datasets</a> ROS package. </p>
-</blockquote>
-<p><a href="https://www.nuscenes.org/object-detection"><img src="https://img.shields.io/badge/origin-3D_Object_Detection_Challenge-green" alt="3D Object Detection Challenge" class="inline"/></a> <img src="https://img.shields.io/badge/published-2019-green" alt="2019" class="inline"/></p>
+<table class="markdownTable">
+<tr class="markdownTableHead">
+<th class="markdownTableHeadNone">Topic   </th><th class="markdownTableHeadNone">Type   </th><th class="markdownTableHeadNone">Description    </th></tr>
+<tr class="markdownTableRowOdd">
+<td class="markdownTableBodyNone"><code>prediction</code>   </td><td class="markdownTableBodyNone"><code>perception_msgs/ObjectList</code>   </td><td class="markdownTableBodyNone">3D objects detected by the system under test    </td></tr>
+<tr class="markdownTableRowEven">
+<td class="markdownTableBodyNone"><code>label</code>   </td><td class="markdownTableBodyNone"><code>perception_msgs/ObjectList</code>   </td><td class="markdownTableBodyNone">3D object labels of the dataset; predictions in another frame are transformed into the frame of the labels with the transforms published on <code>/tf</code> and <code>/tf_static</code>    </td></tr>
+<tr class="markdownTableRowOdd">
+<td class="markdownTableBodyNone"><code>label_meta_info</code> (optional)   </td><td class="markdownTableBodyNone"><code>autonomy_datasets_msgs/ObjectListMetaInfo</code>   </td><td class="markdownTableBodyNone">dataset annotations of the labels, subscribed next to <code>label</code> on <code>&lt;label topic&gt;/meta_info</code>; only read to recognize bike racks. Samples of a dataset that publishes no meta information are evaluated without it   </td></tr>
+</table>
 <p>Metrics are computed based on the following assumptions:</p>
 <ul>
-<li><p class="startli">Ground-truth labels carry the full nuScenes annotation category (e.g. <code>vehicle.car</code>); predictions already carry the detection class name. Categories are grouped into the 10 evaluated detection classes following the official <a href="https://www.nuscenes.org/object-detection"><code>general_to_detection</code></a> mapping, categories outside those classes are dropped and not evaluated, and <code>static_object.bicycle_rack</code> is retained (as <code>bike_rack</code>) solely for the bike-rack filter below and is never scored.</p>
+<li><b>Classes</b>: the evaluated classes are the classes of <code>perception_msgs/ObjectClassification</code>: <code>pedestrian</code>, <code>bicycle</code>, <code>motorcycle</code>, <code>car</code>, <code>utility</code>, <code>bus</code>, <code>animal</code>, <code>vru</code> and <code>micro</code>.<ul>
+<li>The classes of an object are the classes of its classifications that share the highest probability. A dataset that cannot tell which class an object has assigns all its possible classes with the same probability, e.g. Waymo a vehicle as <code>car</code>, <code>motorcycle</code>, <code>utility</code>, <code>bus</code> and <code>micro</code>. A detection usually has a single most probable class.</li>
+<li>classes the message does not define, e.g. Waymo's signs, are evaluated as <code>UNKNOWN</code>.</li>
+<li><code>UNKNOWN</code> (definitely none of the defined classes) and <code>UNCLASSIFIED</code> (unknown classification, i.e. any class) are never evaluated. Predictions of neither evaluated class, e.g. barriers and traffic cones of a nuScenes-trained detector, are dropped.</li>
+</ul>
+</li>
+<li><b>Compatibility</b>: a prediction may only match a label if all its classes are possible classes of the label, e.g. a <code>utility</code> prediction matches a Waymo vehicle but not a nuScenes car. An <code>UNCLASSIFIED</code> label may be any class.</li>
+<li><b>Positive and don't-care labels</b>: a label whose possible classes are all evaluated counts exactly once, as true positive or false negative. A label that may also be <code>UNKNOWN</code> or <code>UNCLASSIFIED</code> is a don't-care object: a prediction matched to it is ignored, and it is never a false negative. A label that can only be <code>UNKNOWN</code>, e.g. a nuScenes barrier, is matched by no prediction, so a <code>car</code> predicted on it is a false positive.</li>
+<li><p class="startli"><b>Evaluated classes</b>: classes that the labels of a dataset do not distinguish are evaluated together, as one class named after its members joined by <code>|</code>. All possible classes of a positive label end up in the same evaluated class, and the evaluated classes are derived from the labels of all evaluated samples, so the results of each scene use the same classes as the results of all samples. Each label and each detection of a single class therefore counts for exactly one evaluated class.</p>
 <details >
 <summary >
-Full category → detection class mapping</summary>
-<ul>
-<li><code>vehicle.car</code>: <code>car</code></li>
-<li><code>vehicle.truck</code>: <code>truck</code></li>
-<li><code>vehicle.bus.bendy</code>: <code>bus</code></li>
-<li><code>vehicle.bus.rigid</code>: <code>bus</code></li>
-<li><code>vehicle.trailer</code>: <code>trailer</code></li>
-<li><code>vehicle.construction</code>: <code>construction_vehicle</code></li>
-<li><code>human.pedestrian.adult</code>: <code>pedestrian</code></li>
-<li><code>human.pedestrian.child</code>: <code>pedestrian</code></li>
-<li><code>human.pedestrian.construction_worker</code>: <code>pedestrian</code></li>
-<li><code>human.pedestrian.police_officer</code>: <code>pedestrian</code></li>
-<li><code>vehicle.motorcycle</code>: <code>motorcycle</code></li>
-<li><code>vehicle.bicycle</code>: <code>bicycle</code></li>
-<li><code>movable_object.trafficcone</code>: <code>traffic_cone</code></li>
-<li><code>movable_object.barrier</code>: <code>barrier</code></li>
-<li><code>static_object.bicycle_rack</code>: <code>bike_rack</code> (filter only, not scored)</li>
-<li><code>animal</code>: dropped</li>
-<li><code>human.pedestrian.personal_mobility</code>: dropped</li>
-<li><code>human.pedestrian.stroller</code>: dropped</li>
-<li><code>human.pedestrian.wheelchair</code>: dropped</li>
-<li><code>movable_object.debris</code>: dropped</li>
-<li><code>movable_object.pushable_pullable</code>: dropped</li>
-<li><code>vehicle.emergency.ambulance</code>: dropped</li>
-<li><code>vehicle.emergency.police</code>: dropped</li>
-</ul>
+Evaluated classes per dataset</summary>
+<p></p>
+<table class="markdownTable">
+<tr class="markdownTableHead">
+<th class="markdownTableHeadNone">Dataset   </th><th class="markdownTableHeadNone">Evaluated classes    </th></tr>
+<tr class="markdownTableRowOdd">
+<td class="markdownTableBodyNone">nuScenes, MAN TruckScenes, Zenseact Open Dataset, FZI-AURA, DrivIng, TUM Traffic   </td><td class="markdownTableBodyNone">one per class, e.g. <code>car</code>, <code>utility</code> (trucks, trailers, construction and emergency vehicles), <code>bus</code>, <code>pedestrian</code>, <code>bicycle</code>, <code>motorcycle</code>, <code>vru</code> (strollers, wheelchairs), <code>micro</code> (personal mobility), <code>animal</code>    </td></tr>
+<tr class="markdownTableRowEven">
+<td class="markdownTableBodyNone">Waymo Open Dataset   </td><td class="markdownTableBodyNone"><code>motorcycle\|car\|utility\|bus\|micro</code> (vehicles), <code>pedestrian\|vru</code> (pedestrians), <code>bicycle</code> (cyclists); its unknown objects, labeled <code>UNKNOWN</code> or <code>ANIMAL</code>, are don't-care    </td></tr>
+<tr class="markdownTableRowOdd">
+<td class="markdownTableBodyNone">NVIDIA PhysicalAI AV Dataset   </td><td class="markdownTableBodyNone"><code>car</code>, <code>utility</code>, <code>bus</code>, <code>pedestrian\|vru</code> (persons and strollers), <code>bicycle\|motorcycle</code> (riders), <code>animal</code>; its other vehicles, labeled <code>UNKNOWN</code> or <code>MOTORCYCLE</code>, are don't-care   </td></tr>
+</table>
+<p>Objects that Zenseact Open Dataset flags as unclear and FZI-AURA objects of unknown categories are <code>UNCLASSIFIED</code>, hence don't-care. A dataset should only list several possible classes for objects whose class it systematically cannot tell, since a single such label joins its classes for the whole evaluation.</p>
 <p></p>
 </details>
 </li>
-<li>Labels are excluded only when both lidar and radar point counts are available and both are &lt; 1.</li>
-<li><p class="startli">Labels and predictions are only considered if they fall into a class-specific detection range.</p>
+<li><b>Matching</b>: predictions, highest confidence first, each claim the nearest unclaimed compatible label whose 2D center distance on the ground plane is below the threshold of <code>{0.5, 1.0, 2.0, 4.0} meters</code>; of equally distant labels, positive ones are claimed first. For labels of a single class, this is the per-class matching of nuScenes. A true positive belongs to the evaluated class of its label, a false positive counts against the evaluated class of each of its classes.</li>
+<li><p class="startli"><b>Detection range</b>: labels and predictions are only considered within the range of their classes. An object of several possible classes uses the largest of their ranges, an <code>UNCLASSIFIED</code> label the largest of all.</p>
 <details >
 <summary >
 Per-class detection range</summary>
 <ul>
-<li>Barrier: <code>&lt;= 30 m</code></li>
-<li>Traffic Cone: <code>&lt;= 30 m</code></li>
-<li>Bicycle: <code>&lt;= 40 m</code></li>
-<li>Motorcycle: <code>&lt;= 40 m</code></li>
-<li>Pedestrian: <code>&lt;= 40 m</code></li>
-<li>Car: <code>&lt;= 50 m</code></li>
-<li>Bus: <code>&lt;= 50 m</code></li>
-<li>Construction Vehicle: <code>&lt;= 50 m</code></li>
-<li>Trailer: <code>&lt;= 50 m</code></li>
-<li>Truck: <code>&lt;= 50 m</code></li>
+<li>Car, Utility, Bus: <code>&lt; 50 m</code></li>
+<li>Pedestrian, Bicycle, Motorcycle: <code>&lt; 40 m</code></li>
+<li>VRU, Micro, Animal: <code>&lt; 40 m</code> (not evaluated by nuScenes, ranged like pedestrians)</li>
 </ul>
 <p></p>
 </details>
 </li>
-<li>Bikes and motorcycles are removed from predictions and labels if they fall inside a bike-rack.</li>
-<li>A match of label and prediction is defined based on the 2D center distance on the ground plane. Predictions are matched with labels that have the smallest center-distance up to thresholds of <code>{0.5, 1.0, 2.0, 4.0} meters</code>. For each match threshold, average precision (<code>ap</code>) is calculated by integrating the recall-precision curve for recalls <b>and</b> precisions <code>&gt; 0.1</code> (points at or below either threshold are excluded). The mean average precision (<code>map</code>) is the average over match thresholds and classes.</li>
-<li>All true positive metrics (<code>ate</code>, ...) are calculated using a match threshold of <code>2.0 m</code>.</li>
+<li><b>Bike racks</b>: bicycles and motorcycles are removed from predictions and labels if their center falls inside the footprint of a bike rack. Bike racks are recognized by their <code>original_class</code> (<code>static_object.bicycle_rack</code>) in the optional label meta information, as published for nuScenes and MAN TruckScenes.</li>
+<li><b>Average precision</b>: for each match threshold, the average precision (<code>ap</code>) is calculated by integrating the recall-precision curve for recalls <b>and</b> precisions <code>&gt; 0.1</code> (points at or below either threshold are excluded). The mean average precision (mAP) is the average over match thresholds and evaluated classes with labels; an evaluated class without labels has no AP, so its predictions do not dilute the mAP. Evaluated classes with labels that the model never predicts count with AP 0.</li>
+<li><b>True positive metrics</b> (<code>ate</code>, ...) are calculated using a match threshold of <code>2.0 m</code>. The velocity error <code>ave</code> is only computed against labels whose velocity is set: <code>perception_msgs</code> marks a state entry that is not set with <code>CONTINUOUS_STATE_COVARIANCE_INVALID</code> on the diagonal of the state covariance. Without any label with velocity, <code>ave</code> is unavailable.</li>
+<li><b>Detection score</b>: <code>(5·mAP + Σ max(1−m{metric},0)) / (5 + number of TP metrics)</code> over the available TP metrics <code>ate</code>, <code>ase</code>, <code>aoe</code> and <code>ave</code>, i.e. the formula of the nuScenes detection score (NDS) without the attribute error.</li>
+</ul>
+<h3><a class="anchor" id="autotoc_md12"></a>
+Deviations from the nuScenes reference</h3>
+<ul>
+<li><b>Classes</b>: the classes of <code>perception_msgs/ObjectClassification</code> replace the 10 nuScenes detection classes, e.g. trucks, trailers and construction vehicles are evaluated together as <code>utility</code>, barriers and traffic cones are not evaluated, and strollers, wheelchairs, personal mobility devices, animals and emergency vehicles are. Classes without labels in the evaluated samples are skipped instead of entering the mean with AP 0.</li>
+<li><b>Attributes</b>: <code>perception_msgs/Object</code> cannot carry attributes, so the attribute error <code>aae</code> is not evaluated and the detection score is not comparable to the official NDS.</li>
+<li><b>Velocities</b>: as nuScenes skips labels whose velocity cannot be determined, the velocity error skips labels whose velocity is not marked as set in their state covariance. Without any such label, <code>ave</code> is left out of the detection score instead of counting as error 1.</li>
+<li><b>Label filters</b>: the evaluation does not filter labels by their number of points. autonomy_datasets publishes lidar labels with at least <code>min_lidar_points_in_bbox</code> lidar points (default <code>1</code>), so labels that only radar points fall into are missing. Bike racks are only known if their labels are published, and their footprint is checked in 2D.</li>
+<li><b>Ranges</b> are measured from the origin of the frame the labels are given in, e.g. the lidar, instead of the ego vehicle.</li>
+<li><b>TP errors</b> are interpolated over the recall of all predictions instead of over their confidence.</li>
+<li>The number of predictions per sample is not limited.</li>
 </ul>
 <details >
 <summary >
 Output metrics</summary>
 <p></p>
+<p>The results hold the <code>metrics</code> over all evaluated samples and, under <code>scenes</code>, the <code>num_samples</code>, <code>sample_ids</code> and <code>metrics</code> of each scene. Each metric holds its aggregated value under <code>_value_</code>, next to its sub-metrics per match threshold or per evaluated class <code>{class}</code>, e.g. <code>car</code> or <code>pedestrian|vru</code>.</p>
 <table class="markdownTable">
 <tr class="markdownTableHead">
 <th class="markdownTableHeadNone">Metric   </th><th class="markdownTableHeadNone">Description    </th></tr>
 <tr class="markdownTableRowOdd">
-<td class="markdownTableBodyNone"><code>ap_0.5_{barrier,traffic_cone,...}</code>   </td><td class="markdownTableBodyNone">Average precision for class with maximum match distance of 0.5 meters.    </td></tr>
+<td class="markdownTableBodyNone"><code>_value_</code>   </td><td class="markdownTableBodyNone">Detection score combining the mAP and the available mean TP errors with weights 5-1-1-1-1, normalised by the sum of the weights: <code>(5·mAP + Σ max(1−mTP,0)) / (5 + number of TP errors)</code>, <code>null</code> without labels.    </td></tr>
 <tr class="markdownTableRowEven">
-<td class="markdownTableBodyNone"><code>ap_1.0_{barrier,traffic_cone,...}</code>   </td><td class="markdownTableBodyNone">Average precision for class with maximum match distance of 1 meter.    </td></tr>
+<td class="markdownTableBodyNone"><code>num_labels._value_</code>   </td><td class="markdownTableBodyNone">Number of positive labels, i.e. without don't-care labels.    </td></tr>
 <tr class="markdownTableRowOdd">
-<td class="markdownTableBodyNone"><code>ap_2.0_{barrier,traffic_cone,...}</code>   </td><td class="markdownTableBodyNone">Average precision for class with maximum match distance of 2 meters.    </td></tr>
+<td class="markdownTableBodyNone"><code>num_labels.{class}._value_</code>   </td><td class="markdownTableBodyNone">Number of positive labels of the class, for every evaluated class with labels or predictions. A class with predictions but <code>0</code> labels has no AP and TP errors, so its predictions do not enter the metrics.    </td></tr>
 <tr class="markdownTableRowEven">
-<td class="markdownTableBodyNone"><code>ap_4.0_{barrier,traffic_cone,...}</code>   </td><td class="markdownTableBodyNone">Average precision for class with maximum match distance of 4 meters.    </td></tr>
+<td class="markdownTableBodyNone"><code>num_labels.{class}.{classes}</code>   </td><td class="markdownTableBodyNone">Number of positive labels of the class by their possible classes <code>{classes}</code>, joined by <code>\|</code>, e.g. NVIDIA's persons as <code>pedestrian\|vru</code> and its strollers as <code>vru</code> within <code>pedestrian\|vru</code>.    </td></tr>
 <tr class="markdownTableRowOdd">
-<td class="markdownTableBodyNone"><code>map_{barrier,traffic_cone,...}</code>   </td><td class="markdownTableBodyNone">Mean average precision for class over all match distance thresholds.    </td></tr>
+<td class="markdownTableBodyNone"><code>num_predictions._value_</code>   </td><td class="markdownTableBodyNone">Number of predictions of an evaluated class.    </td></tr>
 <tr class="markdownTableRowEven">
-<td class="markdownTableBodyNone"><code>map</code>   </td><td class="markdownTableBodyNone">Mean average precision all match distance thresholds and all classes.    </td></tr>
+<td class="markdownTableBodyNone"><code>num_predictions.{class}</code>   </td><td class="markdownTableBodyNone">Number of predictions of the class, for every evaluated class with labels or predictions; a prediction of classes of several evaluated classes counts for each of them. A class with labels but <code>0</code> predictions counts with AP 0.    </td></tr>
 <tr class="markdownTableRowOdd">
-<td class="markdownTableBodyNone"><code>ate_2.0_{barrier,traffic_cone,...}</code>   </td><td class="markdownTableBodyNone">Average translation error for class as Euclidean distance in meters.    </td></tr>
+<td class="markdownTableBodyNone"><code>ap._value_</code>   </td><td class="markdownTableBodyNone">Mean average precision over all match distance thresholds and all evaluated classes with labels, <code>null</code> without labels.    </td></tr>
 <tr class="markdownTableRowEven">
-<td class="markdownTableBodyNone"><code>mate_2.0</code>   </td><td class="markdownTableBodyNone">Mean average translation error over all classes.    </td></tr>
+<td class="markdownTableBodyNone"><code>ap.classes.{class}</code>   </td><td class="markdownTableBodyNone">Mean average precision of the class over all match distance thresholds.    </td></tr>
 <tr class="markdownTableRowOdd">
-<td class="markdownTableBodyNone"><code>ase_2.0_{barrier,traffic_cone,...}</code>   </td><td class="markdownTableBodyNone">Average scale error for class as <code>1 - IoU</code> after aligning centers and orientation.    </td></tr>
+<td class="markdownTableBodyNone"><code>ap.dist_{threshold}._value_</code>   </td><td class="markdownTableBodyNone">Mean average precision over all evaluated classes with labels, with a maximum match distance of <code>{threshold}</code> meters (<code>0.5</code>, <code>1.0</code>, <code>2.0</code>, <code>4.0</code>).    </td></tr>
 <tr class="markdownTableRowEven">
-<td class="markdownTableBodyNone"><code>mase_2.0</code>   </td><td class="markdownTableBodyNone">Mean average scale error over all classes.    </td></tr>
+<td class="markdownTableBodyNone"><code>ap.dist_{threshold}.classes.{class}</code>   </td><td class="markdownTableBodyNone">Average precision of the class with a maximum match distance of <code>{threshold}</code> meters.    </td></tr>
 <tr class="markdownTableRowOdd">
-<td class="markdownTableBodyNone"><code>aoe_2.0_{barrier,traffic_cone,...}</code>   </td><td class="markdownTableBodyNone">Average orientation error for class as smallest yaw angle difference between prediction and ground truth in radians. Orientation errors for traffic_cones are ignored and barriers are only evaluated up to 180 degrees.    </td></tr>
+<td class="markdownTableBodyNone"><code>ate._value_</code>, <code>ate.{class}</code>   </td><td class="markdownTableBodyNone">Average translation error as Euclidean distance in meters, mean over the evaluated classes with labels and per class.    </td></tr>
 <tr class="markdownTableRowEven">
-<td class="markdownTableBodyNone"><code>maoe_2.0</code>   </td><td class="markdownTableBodyNone">Mean average orientation error over all classes.    </td></tr>
+<td class="markdownTableBodyNone"><code>ase._value_</code>, <code>ase.{class}</code>   </td><td class="markdownTableBodyNone">Average scale error as <code>1 - IoU</code> after aligning centers and orientation.    </td></tr>
 <tr class="markdownTableRowOdd">
-<td class="markdownTableBodyNone"><code>ave_2.0_{barrier,traffic_cone,...}</code>   </td><td class="markdownTableBodyNone">Average velocity error for class as absolute velocity error in <code>m/s</code>. Velocities for barriers and traffic_cones are ignored.    </td></tr>
+<td class="markdownTableBodyNone"><code>aoe._value_</code>, <code>aoe.{class}</code>   </td><td class="markdownTableBodyNone">Average orientation error as smallest yaw angle difference between prediction and ground truth in radians.    </td></tr>
 <tr class="markdownTableRowEven">
-<td class="markdownTableBodyNone"><code>mave_2.0</code>   </td><td class="markdownTableBodyNone">Mean average velocity error over all classes.    </td></tr>
-<tr class="markdownTableRowOdd">
-<td class="markdownTableBodyNone"><code>aae_2.0_{barrier,traffic_cone,...}</code>   </td><td class="markdownTableBodyNone">Average attribute error for class as <code>1 - attribute_accuracy</code>. Attribute errors for barriers and traffic_cones are ignored. Returns <code>null</code> when the dataset loader does not provide attribute annotations.    </td></tr>
-<tr class="markdownTableRowEven">
-<td class="markdownTableBodyNone"><code>maae_2.0</code>   </td><td class="markdownTableBodyNone">Mean average attribute error over all classes. In the current implementation this is always a numeric value (defaults to <code>1.0</code> if no valid attribute-error values are available).    </td></tr>
-<tr class="markdownTableRowOdd">
-<td class="markdownTableBodyNone"><code>nds</code>   </td><td class="markdownTableBodyNone">nuScenes Detection Score (NDS) combining <code>map</code> and five TP error scores with weights 5-1-1-1-1-1, normalised by 10: <code>NDS = (5·mAP + max(1−mATE,0) + max(1−mASE,0) + max(1−mAOE,0) + max(1−mAVE,0) + max(1−mAAE,0)) / 10</code>. In the current implementation the denominator is always <code>10</code>.   </td></tr>
+<td class="markdownTableBodyNone"><code>ave._value_</code>, <code>ave.{class}</code>   </td><td class="markdownTableBodyNone">Average velocity error as absolute velocity error in <code>m/s</code>, <code>null</code> for a class without labels with velocity and as mean if no label has a velocity.   </td></tr>
 </table>
+<p>The TP errors are measured with a maximum match distance of 2 meters; their means skip <code>null</code> classes.</p>
 <p></p>
 </details>
 <h2><a class="anchor" id="autotoc_md13"></a>
-Adding more Benchmarks</h2>
-<p>To contribute a new benchmark for a dataset or evaluation protocol:</p>
+Adding more Evaluations</h2>
+<p>An evaluation declares the topics it reads and computes metrics from their messages. It may read the topics of the system under test only, e.g. the ego state and the surrounding objects to evaluate a closed-loop planner by its time to collision, or compare them with ground truth, e.g. the predictions of a perception algorithm with the labels of a dataset. The node subscribes to all declared topics, matches their messages into samples by their stamp, and passes the messages of each sample by the names of their topics.</p>
+<p>To contribute a new evaluation for a dataset or evaluation protocol:</p>
 <ol type="1">
-<li>Create a new benchmark class in <a href="../autonomy_benchmarks/autonomy_benchmarks/benchmarks/">autonomy_benchmarks/benchmarks/</a> that inherits from <code>AutonomyBenchmark</code>.</li>
-<li>Implement the three abstract methods: <code>required_inputs()</code>, <code>compute_sample_metrics()</code>, and <code>compute_aggregated_metrics()</code>.</li>
-<li>Configure the benchmark in <code>__init__</code> (thresholds, per-class ranges, and metric rules as instance attributes); keep static lookup tables (e.g. category-to-class mappings) as module-level <code>_CONSTANT_NAME</code> constants.</li>
-<li>Register the benchmark in the node's handler dispatch in <a href="../autonomy_benchmarks/autonomy_benchmarks/autonomy_benchmarks.py">autonomy_benchmarks.py</a> so it can be selected via the <code>benchmark:=&lt;name&gt;</code> launch argument.</li>
-<li>Add comprehensive tests in <a href="../autonomy_benchmarks/tests/benchmarks/">tests/benchmarks/</a> following existing test patterns.</li>
-<li>Update documentation with benchmark details, metrics table, and dataset requirements.</li>
-<li>Create a <a href="https://github.com/thinking-cars/autonomy_benchmarks-internal/pulls">Pull Request</a> on GitHub and wait for maintainer feedback. </li>
+<li>Create a new evaluation class in <a href="../autonomy_evaluation/autonomy_evaluation/evaluations/">autonomy_evaluation/evaluations/</a> that inherits from <code>Evaluation</code>.</li>
+<li>Declare the topics it reads, each by the name it is configured with, e.g. <code>prediction:=/topic</code>, mapped to its ROS message type:<ul>
+<li><code>required_inputs()</code>: the topics of the system under test that are evaluated (required).</li>
+<li><code>required_ground_truth()</code>: the reference the inputs are compared with, e.g. dataset labels (optional, none by default).</li>
+<li><code>optional_ground_truth()</code>: ground truth that enriches the evaluation without being necessary for it, e.g. dataset annotations that not every dataset publishes (optional, none by default). A sample only waits for its message while its topic has a publisher; otherwise, the message is passed as <code>None</code>.</li>
+<li><code>derived_topics()</code>: topics published next to another one, e.g. meta information on <code>&lt;label topic&gt;/meta_info</code>, which follow that topic instead of being configured on their own (optional).</li>
+</ul>
+</li>
+<li>Implement <code>compute_sample_metrics()</code>, whose parameters are named after the declared topics, and <code>compute_aggregated_metrics()</code>. Optionally, implement <code>visualization_outputs()</code> and <code>visualize_sample()</code> to publish a per-sample visualization for RViz.</li>
+<li>Configure the evaluation in <code>__init__</code> (thresholds, per-class ranges, and metric rules as instance attributes); keep static lookup tables (e.g. class names) as module-level <code>_CONSTANT_NAME</code> constants.</li>
+<li>Register the evaluation in <code>EVALUATIONS</code> of <a href="../autonomy_evaluation/autonomy_evaluation/evaluations/registry.py">registry.py</a> so it can be selected via the <code>evaluation:=&lt;name&gt;</code> launch argument, add comprehensive tests in <a href="../autonomy_evaluation/tests/evaluations/">tests/evaluations/</a> following existing test patterns, and update the documentation with evaluation details, metrics table, dataset requirements, and the topics it reads.</li>
+<li>Create a <a href="https://github.com/thinking-cars/autonomy_evaluation/pulls">Pull Request</a> on GitHub and wait for maintainer feedback.</li>
 </ol>
-</div></div><!-- contents -->
+<p>An evaluation that is specific to a system under test can also stay in a package of its own. The node loads it by its module and class, e.g. <code>evaluation:=my_package.evaluations:TimeToCollision</code>, as long as the module is importable in the environment of the node:</p>
+<div class="fragment"><div class="line"><span class="keyword">from</span> typing <span class="keyword">import</span> Any, Dict, List, Optional</div>
+<div class="line"> </div>
+<div class="line"><span class="keyword">from</span> autonomy_evaluation.evaluations <span class="keyword">import</span> Evaluation</div>
+<div class="line"><span class="keyword">from</span> perception_msgs.msg <span class="keyword">import</span> EgoData, ObjectList</div>
+<div class="line"> </div>
+<div class="line"> </div>
+<div class="line"><span class="keyword">class </span>TimeToCollision(Evaluation):</div>
+<div class="line">    <span class="keyword">def </span>__init__(self) -&gt; None:</div>
+<div class="line">        super().__init__(name=<span class="stringliteral">&quot;time_to_collision&quot;</span>, description=<span class="stringliteral">&quot;time to collision of a closed-loop planner&quot;</span>)</div>
+<div class="line"> </div>
+<div class="line">    <span class="keyword">def </span>required_inputs(self) -&gt; Dict[str, Any]:</div>
+<div class="line">        <span class="comment"># inputs only: the metric needs no ground truth</span></div>
+<div class="line">        <span class="keywordflow">return</span> {<span class="stringliteral">&quot;ego_data&quot;</span>: EgoData, <span class="stringliteral">&quot;objects&quot;</span>: ObjectList}</div>
+<div class="line"> </div>
+<div class="line">    <span class="keyword">def </span>compute_sample_metrics(self, ego_data: EgoData, objects: ObjectList, sample_id: Optional[str] = <span class="keywordtype">None</span>) -&gt; Dict[str, Any]:</div>
+<div class="line">        <span class="keywordflow">return</span> {<span class="stringliteral">&quot;ttc&quot;</span>: ...}</div>
+<div class="line"> </div>
+<div class="line">    <span class="keyword">def </span>compute_aggregated_metrics(self, sample_results: List[Dict[str, Any]]) -&gt; Dict[str, Any]:</div>
+<div class="line">        <span class="keywordflow">return</span> {<span class="stringliteral">&quot;min_ttc&quot;</span>: min(entry[<span class="stringliteral">&quot;metrics&quot;</span>][<span class="stringliteral">&quot;ttc&quot;</span>] <span class="keywordflow">for</span> entry <span class="keywordflow">in</span> sample_results)}</div>
+</div><!-- fragment --> </div></div><!-- contents -->
 </div><!-- PageDoc -->
 </div><!-- doc-content -->
 <!-- start footer part -->
