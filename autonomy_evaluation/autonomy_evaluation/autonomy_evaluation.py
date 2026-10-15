@@ -23,6 +23,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from rclpy.subscription import Subscription
 from rclpy.task import Future
 from rclpy.timer import Timer
+from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformListener
 
 # Interval in seconds at which the evaluation checks whether it can request further samples; the
@@ -36,6 +37,10 @@ _SERVICE_WAIT_LOG_INTERVAL_S = 10.0
 # before the dataset node is considered to have shut down, which lets a response that the dataset
 # sent just before shutting down still arrive
 _DATASET_SHUTDOWN_GRACE_PERIOD_S = 2.0
+
+# Seconds between answering a request to finish the evaluation and shutting down, which lets the
+# response reach the client before the node is gone
+_FINISH_SHUTDOWN_DELAY_S = 0.5
 
 # Number of samples whose messages are kept while they wait for the messages of their remaining
 # evaluation inputs
@@ -496,17 +501,25 @@ class AutonomyEvaluation(Node):
         self.evaluation_finished = False
         self.num_evaluated_samples = 0
 
+        # Whoever publishes the samples may end the evaluation, e.g. a closed-loop simulation at the
+        # end of its scenario, which is the only way to learn about the end of an external sample source
+        self.finish_service = self.create_service(Trigger, "~/finish", self.finish_callback)
+        self.shutdown_timer: Optional[Timer] = None
+
         # With an external sample source, the samples are evaluated as they arrive. Whoever
         # publishes them receives the responses of the dataset, if any, so the evaluation neither
         # learns the scenes of the samples nor when publishing has ended, and reports its results
-        # once the node is stopped.
+        # once it is asked to finish or the node is stopped.
         if not self.requests_samples:
             self.request_timer: Optional[Timer] = None
             if self.requested_sample_ids:
                 self.get_logger().warn(
                     f"Parameter 'sample_ids' is ignored, as only sample source '{SAMPLE_SOURCE_DATASET}' requests samples"
                 )
-            self.get_logger().info("Evaluating the samples published by others, stop the node to report the results")
+            self.get_logger().info(
+                "Evaluating the samples published by others, call "
+                f"'{self.resolve_service_name(self.finish_service.srv_name)}' or stop the node to report the results"
+            )
             return
 
         self.sample_request_client = self.create_client(RequestSamples, "~/request_samples")
@@ -794,6 +807,43 @@ class AutonomyEvaluation(Node):
                 self.get_logger().error(f"Failed to write {reported_results} to '{self.results_path}': {exception}")
         else:
             self.get_logger().info(f"Aggregated dataset metrics:\n{aggregated_metrics}")
+
+    def finish_callback(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
+        """Finishes the evaluation on request, reports its results and shuts down the node
+
+        With an external sample source, e.g. a closed-loop simulation, only whoever publishes the
+        samples knows when the last one has been published, so its results are complete once it
+        asks to finish. With the dataset as sample source, the results are only complete if the
+        dataset has published its last sample; finishing earlier leaves the remaining samples
+        unevaluated, so the results are marked as incomplete. The node shuts down shortly after the
+        response, so that the response still reaches the client.
+
+        Args:
+            request (Trigger.Request): request to finish, without content
+            response (Trigger.Response): response to fill
+
+        Returns:
+            Trigger.Response: whether the evaluation was finished, and how
+        """
+        if self.evaluation_finished:
+            response.success = False
+            response.message = f"Evaluation '{self.evaluation}' has already finished"
+            return response
+
+        complete = not self.requests_samples or self.publishing_finished
+        self.get_logger().info(f"Finishing evaluation '{self.evaluation}' on request")
+        self.finalize_evaluation(complete=complete)
+        self.shutdown_timer = self.create_timer(
+            _FINISH_SHUTDOWN_DELAY_S, self.shutdown, clock=Clock(clock_type=ClockType.STEADY_TIME)
+        )
+
+        reported_results = f"written to '{self.results_path}'" if self.results_path else "logged"
+        response.success = True
+        response.message = (
+            f"Finished evaluation '{self.evaluation}' after {self.num_evaluated_samples} evaluated sample(s), "
+            f"{'complete' if complete else 'incomplete'} results {reported_results}"
+        )
+        return response
 
     def shutdown(self):
         """Stops the node, as there is nothing left to evaluate once the evaluation has finished

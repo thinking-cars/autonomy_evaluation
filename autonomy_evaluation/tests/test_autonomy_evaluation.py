@@ -13,8 +13,8 @@ the scene played before it, has to match topics of a simulation within a toleran
 for an optional topic that is not published, the evaluation of a sample, which requests the next
 samples unless others publish them, advancing the
 evaluation until it finishes, which it also has to once the dataset node has shut down after its
-last sample, and the finalization of the results, which reports the samples of an interrupted
-evaluation as incomplete.
+last sample, finishing the evaluation on request, and the finalization of the results, which reports
+the samples of an interrupted evaluation as incomplete.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ import pytest
 from autonomy_evaluation import autonomy_evaluation
 from autonomy_evaluation.autonomy_evaluation import AutonomyEvaluation, parse_sample_ids, SampleSynchronizer
 from autonomy_evaluation.evaluations import Aggregation, EVALUATED, Evaluation, Input, Metric, MetricGroup
+from std_srvs.srv import Trigger
 
 _TOPICS = ["prediction", "label", "label_meta_info"]
 
@@ -745,3 +746,78 @@ class TestFinalizeEvaluation:
 
         assert node.evaluation_handler.finalized_complete is False
         assert node.evaluation_handler.written_results is None
+
+
+def _finishing_node(requests_samples: bool, publishing_finished: bool = False) -> SimpleNamespace:
+    """Stub the node state that finishing the evaluation on request reads, recording what it does."""
+    node = SimpleNamespace(
+        evaluation="counting",
+        evaluation_finished=False,
+        requests_samples=requests_samples,
+        publishing_finished=publishing_finished,
+        num_evaluated_samples=3,
+        results_path="/results/evaluation.json",
+        finalized=[],
+        timers=[],
+        shutdown=lambda: None,
+        get_logger=lambda logger=_FakeLogger(): logger,
+    )
+
+    def finalize_evaluation(complete: bool = True):
+        node.finalized.append(complete)
+        node.evaluation_finished = True
+
+    node.finalize_evaluation = finalize_evaluation
+    node.create_timer = lambda period, callback, clock=None: node.timers.append((period, callback))
+    return node
+
+
+class TestFinish:
+    """Tests finishing the evaluation on request, e.g. by a closed-loop simulation at the end of its scenario."""
+
+    def test_external_sample_source_finishes_with_complete_results(self):
+        """Only whoever publishes the samples knows that the last one was published, so its results are complete."""
+        node = _finishing_node(requests_samples=False)
+
+        response = AutonomyEvaluation.finish_callback(node, Trigger.Request(), Trigger.Response())
+
+        assert response.success
+        assert "complete results written to '/results/evaluation.json'" in response.message
+        assert node.finalized == [True]
+
+    def test_shuts_down_once_the_response_was_sent(self):
+        """The node shuts down after a delay, so that the response still reaches the client."""
+        node = _finishing_node(requests_samples=False)
+
+        AutonomyEvaluation.finish_callback(node, Trigger.Request(), Trigger.Response())
+
+        assert node.timers == [(autonomy_evaluation._FINISH_SHUTDOWN_DELAY_S, node.shutdown)]
+
+    def test_finishing_before_the_last_sample_of_the_dataset_leaves_the_results_incomplete(self):
+        """Samples the dataset has not published yet are left unevaluated."""
+        node = _finishing_node(requests_samples=True)
+
+        response = AutonomyEvaluation.finish_callback(node, Trigger.Request(), Trigger.Response())
+
+        assert response.success
+        assert "incomplete results" in response.message
+        assert node.finalized == [False]
+
+    def test_finishing_after_the_last_sample_of_the_dataset_completes_the_results(self):
+        """Once the dataset has published its last sample, finishing reports complete results."""
+        node = _finishing_node(requests_samples=True, publishing_finished=True)
+
+        AutonomyEvaluation.finish_callback(node, Trigger.Request(), Trigger.Response())
+
+        assert node.finalized == [True]
+
+    def test_rejects_finishing_a_finished_evaluation(self):
+        """A finished evaluation has reported its results already and is not finalized again."""
+        node = _finishing_node(requests_samples=False)
+        node.evaluation_finished = True
+
+        response = AutonomyEvaluation.finish_callback(node, Trigger.Request(), Trigger.Response())
+
+        assert not response.success
+        assert node.finalized == []
+        assert node.timers == []

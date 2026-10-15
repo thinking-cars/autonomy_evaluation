@@ -41,7 +41,7 @@ ros2 launch autonomy_evaluation autonomy_evaluation.launch.py \
   results_path:=/results/object_detection_3d.json
 ```
 
-With `sample_source` set to `external`, the node requests no samples itself and evaluates every sample that others publish, e.g. a closed-loop simulation, a live system, or the dataset stepped through with the [playback panel](https://github.com/thinking-cars/autonomy_datasets/blob/main/autonomy_datasets_rviz_plugins/README.md) in RViz, whose _Service_ field has to name the `request_samples` service of the dataset node (`/datasets/request_samples` by default). `samples_per_request`, `sample_ids` and `evaluation_timeout` then have no effect. As the node receives no responses of a dataset, it neither learns the scenes of the samples, so `scenes` stays empty, nor when publishing has ended: the results of the evaluated samples are reported once the node is stopped, e.g. with Ctrl-C, and are marked as incomplete.
+With `sample_source` set to `external`, the node requests no samples itself and evaluates every sample that others publish, e.g. a closed-loop simulation, a live system, or the dataset stepped through with the [playback panel](https://github.com/thinking-cars/autonomy_datasets/blob/main/autonomy_datasets_rviz_plugins/README.md) in RViz, whose _Service_ field has to name the `request_samples` service of the dataset node (`/datasets/request_samples` by default). `samples_per_request`, `sample_ids` and `evaluation_timeout` then have no effect. As the node receives no responses of a dataset, it neither learns the scenes of the samples, so `scenes` stays empty, nor when publishing has ended: the results of the evaluated samples are reported once whoever publishes the samples calls the `~/finish` service, e.g. a closed-loop simulation at the end of its scenario, or once the node is stopped, e.g. with Ctrl-C, which marks them as incomplete.
 
 ```bash
 # look at the samples of a dataset one by one, stepping through them in RViz
@@ -65,8 +65,15 @@ ros2 launch autonomy_evaluation autonomy_evaluation.launch.py \
 flowchart LR
     NODE("autonomy_evaluation")
     NODE o--o|~/request_samples| SC0:::hidden
+    SV0:::hidden o--o|~/finish| NODE
     classDef hidden display: none;
 ```
+
+#### Services
+
+| Service | Type | Description |
+| --- | --- | --- |
+| `~/finish` | `std_srvs/srv/Trigger` | finish the evaluation: report its results and shut down; the results are complete with sample source `external`, and with sample source `dataset` once the dataset has published its last sample |
 
 #### Service Clients
 
