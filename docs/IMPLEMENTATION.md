@@ -105,41 +105,86 @@ The TP errors are measured with a maximum match distance of 2 meters; their mean
 
 ### Adding more Evaluations
 
-An evaluation declares the topics it reads and computes metrics from their messages. It may read the topics of the system under test only, e.g. the ego state and the surrounding objects to evaluate a closed-loop planner by its time to collision, or compare them with ground truth, e.g. the predictions of a perception algorithm with the labels of a dataset. The node subscribes to all declared topics, matches their messages into samples by their stamp, and passes the messages of each sample by the names of their topics.
+An evaluation is composed of metrics, the building blocks of [Metric.py](../autonomy_evaluation/autonomy_evaluation/evaluations/Metric.py). Each metric declares the topics it reads, each by the name it is configured with, e.g. `prediction:=/topic`, its ROS message type and the role it plays:
+
+| Role | Description | Examples |
+| --- | --- | --- |
+| `evaluated` | output or behavior of the system under test | predictions of a detector, state of the ego vehicle a closed-loop planner drives |
+| `reference` | ground truth the evaluated topics are compared with | labels of a dataset |
+| `context` | needed to compute a metric, but neither evaluated nor compared with | road users the ego vehicle interacts with |
+
+An evaluation may therefore read the topics of the system under test only, e.g. the ego state and the surrounding objects to evaluate a closed-loop planner by its time to collision, or compare them with ground truth, e.g. the predictions of a perception algorithm with the labels of a dataset. Which metrics an evaluation computes is selected by its configuration, see [Configuration](#configuration). The node subscribes to the topics of the computed metrics, matches their messages into samples by their stamp, and passes the messages of each sample by the names of their topics.
 
 To contribute a new evaluation for a dataset or evaluation protocol:
 
-1. Create a new evaluation class in [autonomy_evaluation/evaluations/](../autonomy_evaluation/autonomy_evaluation/evaluations/) that inherits from `Evaluation`.
-2. Declare the topics it reads, each by the name it is configured with, e.g. `prediction:=/topic`, mapped to its ROS message type:
-   - `required_inputs()`: the topics of the system under test that are evaluated (required).
-   - `required_ground_truth()`: the reference the inputs are compared with, e.g. dataset labels (optional, none by default).
-   - `optional_ground_truth()`: ground truth that enriches the evaluation without being necessary for it, e.g. dataset annotations that not every dataset publishes (optional, none by default). A sample only waits for its message while its topic has a publisher; otherwise, the message is passed as `None`.
-   - `derived_topics()`: topics published next to another one, e.g. meta information on `<label topic>/meta_info`, which follow that topic instead of being configured on their own (optional).
-3. Implement `compute_sample_metrics()`, whose parameters are named after the declared topics, and `compute_aggregated_metrics()`. Optionally, implement `visualization_outputs()` and `visualize_sample()` to publish a per-sample visualization for RViz.
-4. Configure the evaluation in `__init__` (thresholds, per-class ranges, and metric rules as instance attributes); keep static lookup tables (e.g. class names) as module-level `_CONSTANT_NAME` constants.
-5. Register the evaluation in `EVALUATIONS` of [registry.py](../autonomy_evaluation/autonomy_evaluation/evaluations/registry.py) so it can be selected via the `evaluation:=<name>` launch argument, add comprehensive tests in [tests/evaluations/](../autonomy_evaluation/tests/evaluations/) following existing test patterns, and update the documentation with evaluation details, metrics table, dataset requirements, and the topics it reads.
-6. Create a [Pull Request](https://github.com/thinking-cars/autonomy_evaluation/pulls) on GitHub and wait for maintainer feedback.
+1. Implement its metrics as classes that inherit from `Metric`:
+   - `NAME`: the name the metric is selected, configured and reported by.
+   - `inputs()`: the topics the metric reads, each as `Input(msg_type, role)`. An input is `optional=True` if it enriches the metric without being necessary for it, e.g. dataset annotations that not every dataset publishes: a sample only waits for its message while its topic has a publisher; otherwise, the message is `None`. An input published next to another one, e.g. meta information on `<label topic>/meta_info`, declares `next_to=("label", "/meta_info")` and follows that topic instead of being configured on its own. Metrics of the same evaluation that read the same topic declare it alike.
+   - `default_config()`: the configuration of the metric with its default values, e.g. thresholds (none by default).
+   - `compute_sample(sample)`: turns the messages of a single sample into the record the metric is aggregated from. Data that several metrics derive from the same sample, e.g. the matching of predictions and labels, is derived once with `sample.memo(key, compute)`.
+   - `aggregate(aggregation)`: aggregates the records of the samples of a scene or of the whole evaluation (`aggregation.records(self.name)`) into a dictionary that holds the value of the metric under `_value_` next to its sub-metrics. A metric that depends on the order of the samples, e.g. a jerk, aggregates each contiguous sequence of samples (`aggregation.sequences()`), see [Sequences of samples](#sequences-of-samples).
+   - optionally `requires()`: the metrics whose results the metric builds on, which are computed first and passed in `aggregation.results`, e.g. a score combining other metrics. A metric that only provides data for others is `INTERNAL`: it is computed whenever another metric requires it, but neither selectable nor reported.
+   - optionally `visualization_outputs()` and `visualize_sample(sample)` to publish a per-sample visualization for RViz.
+2. Create the evaluation class in [autonomy_evaluation/evaluations/](../autonomy_evaluation/autonomy_evaluation/evaluations/) that inherits from `Evaluation` and returns its metrics from `metrics()`, in the order they are reported in. Related metrics can be grouped with `MetricGroup(name, metrics)`, so that they are selected, configured and reported together under the name of the group. Declare the configuration shared by all metrics, e.g. per-class ranges, in `default_config()`, and set `HEADLINE_METRIC` to the metric whose value the evaluation reports as its own under `_value_`, if it has one. Keep static lookup tables (e.g. class names) as module-level `_CONSTANT_NAME` constants.
+3. Register the evaluation in `EVALUATIONS` of [registry.py](../autonomy_evaluation/autonomy_evaluation/evaluations/registry.py) so it can be selected via the `evaluation:=<name>` launch argument, add comprehensive tests in [tests/evaluations/](../autonomy_evaluation/tests/evaluations/) following existing test patterns, and update the documentation with evaluation details, metrics table, configuration, dataset requirements, and the topics it reads.
+4. Create a [Pull Request](https://github.com/thinking-cars/autonomy_evaluation/pulls) on GitHub and wait for maintainer feedback.
 
-An evaluation that is specific to a system under test can also stay in a package of its own. The node loads it by its module and class, e.g. `evaluation:=my_package.evaluations:TimeToCollision`, as long as the module is importable in the environment of the node:
+An evaluation that is specific to a system under test can also stay in a package of its own. The node loads it by its module and class, e.g. `evaluation:=my_package.evaluations:MyPlannerEvaluation`, as long as the module is importable in the environment of the node:
 
 ```python
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
-from autonomy_evaluation.evaluations import Evaluation
+from autonomy_evaluation.evaluations import Aggregation, CONTEXT, EVALUATED, Evaluation, Input, Metric, Sample
 from perception_msgs.msg import EgoData, ObjectList
 
 
-class TimeToCollision(Evaluation):
+class ClosestObject(Metric):
+    NAME = "closest_object"
+
+    def inputs(self) -> Dict[str, Input]:
+        # the ego vehicle is evaluated, the objects it passes are the context it is evaluated in
+        return {"ego_data": Input(EgoData, EVALUATED), "objects": Input(ObjectList, CONTEXT)}
+
+    def default_config(self) -> Dict[str, Any]:
+        return {"max_range": 100.0}
+
+    def compute_sample(self, sample: Sample) -> float:
+        return ...  # distance of the closest object of sample["objects"] to sample["ego_data"]
+
+    def aggregate(self, aggregation: Aggregation) -> Dict[str, Any]:
+        return {"_value_": min(aggregation.records(self.name))}
+
+
+class MyPlannerEvaluation(Evaluation):
     def __init__(self) -> None:
-        super().__init__(name="time_to_collision", description="time to collision of a closed-loop planner")
+        super().__init__(name="my_planner", description="distance a closed-loop planner keeps to other road users")
 
-    def required_inputs(self) -> Dict[str, Any]:
-        # inputs only: the metric needs no ground truth
-        return {"ego_data": EgoData, "objects": ObjectList}
-
-    def compute_sample_metrics(self, ego_data: EgoData, objects: ObjectList, sample_id: Optional[str] = None) -> Dict[str, Any]:
-        return {"ttc": ...}
-
-    def compute_aggregated_metrics(self, sample_results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        return {"min_ttc": min(entry["metrics"]["ttc"] for entry in sample_results)}
+    def metrics(self):
+        return [ClosestObject()]
 ```
+
+An evaluation without metric building blocks, e.g. one implemented before they existed, may still declare its topics with `required_inputs()` (evaluated), `required_ground_truth()` (reference), `optional_ground_truth()` and `derived_topics()`, and compute its metrics itself by overriding `compute_sample_metrics()`, whose parameters are named after its topics, and `compute_aggregated_metrics()`.
+
+#### Configuration
+
+Each evaluation is configured by nested entries with default values, which hold
+
+- `max_sample_interval`: seconds between two consecutive samples beyond which they belong to different sequences (default `1.0`),
+- the entries the evaluation shares among all its metrics,
+- `metrics`: the selected metrics, each by the name of a metric, of a group of metrics, or of a metric of a group as `<group>.<metric>`; all metrics by default,
+- the configuration of each metric under its name, nested under the name of its group.
+
+A metric that a selected metric requires is computed as well, but only reported if it is selected itself. The results hold the configuration the metrics were computed with under `config`, next to the topics that were read and their roles under `inputs`.
+
+#### Sequences of samples
+
+Most metrics treat every sample on its own, e.g. the average precision of a detector. Others depend on the order of the samples and the time between them, e.g. the jerk of the ego vehicle or the time between two road users passing the same spot. They are computed on contiguous sequences of samples: two consecutive samples belong to the same sequence if they belong to the same scene, the later one is stamped after the earlier one, and they are at most `max_sample_interval` seconds apart. Within a sequence, an interval of more than 1.5 times the sampling period is a gap, i.e. samples are missing, e.g. because the system under test skipped them or the evaluation did not keep up with a live system.
+
+The results describe how regularly the samples were evaluated under `sampling`, over all samples and per scene:
+
+| Field | Description |
+| --- | --- |
+| `num_sequences` | Number of contiguous sequences of samples. |
+| `period` | Median interval between consecutive samples of a sequence in seconds, `null` without any interval. |
+| `num_gaps` | Number of intervals of more than 1.5 times the sampling period of their sequence. |
+| `max_interval` | Longest interval between consecutive samples of a sequence in seconds, `null` without any interval. |

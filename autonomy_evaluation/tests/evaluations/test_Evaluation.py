@@ -1,13 +1,14 @@
 # Copyright Thinking Cars GmbH
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the topics and the result store of the Evaluation base class.
+"""Tests for the topics, the metrics, the configuration and the result store of the Evaluation base class.
 
 An evaluation reads the topics of a system under test and, if it compares them with a reference,
-ground-truth topics. Metrics are reported on three levels: for every single sample, aggregated over
-the samples of each scene of the dataset, and aggregated over all evaluated samples. Minimal
-evaluations whose metrics are trivial to predict are used, so that the tests cover the topics and
-the grouping and not a metric definition.
+ground-truth topics. It is either composed of metric building blocks, which are selected and
+configured per evaluation, or computes its metrics itself. Metrics are reported on three levels:
+for every single sample, aggregated over the samples of each scene of the dataset, and aggregated
+over all evaluated samples. Minimal evaluations whose metrics are trivial to predict are used, so
+that the tests cover the topics, the composition and the grouping and not a metric definition.
 """
 
 from __future__ import annotations
@@ -16,7 +17,8 @@ import json
 from typing import Any, Dict, List, Optional
 
 import pytest
-from autonomy_evaluation.evaluations.Evaluation import Evaluation
+from autonomy_evaluation.evaluations.Evaluation import Evaluation, flatten_config, unflatten_config
+from autonomy_evaluation.evaluations.Metric import Aggregation, CONTEXT, EVALUATED, Input, Metric, MetricGroup, Sample
 
 
 class CountingEvaluation(Evaluation):
@@ -213,6 +215,7 @@ class TestFinalize:
         assert results["scenes"]["scene_a"] == {
             "num_samples": 2,
             "sample_ids": ["0", "1"],
+            "sampling": {"num_sequences": 1, "period": None, "num_gaps": 0, "max_interval": None},
             "metrics": {"num_predictions": 3, "num_labels": 4},
         }
         assert results["scenes"]["scene_b"]["metrics"] == {"num_predictions": 4, "num_labels": 5}
@@ -326,3 +329,465 @@ class TestIncompleteResults:
         output_path = evaluation.save_results(str(tmp_path / "counting.json"), results=results)
 
         assert json.loads(open(output_path).read())["complete"] is False
+
+
+# --- evaluations composed of metric building blocks ---
+
+# Number of times the objects of a sample were derived, to check that the metrics share them
+_DERIVATIONS: List[str] = []
+
+
+def _objects(sample: Sample) -> List[float]:
+    """Derive the sorted object positions of a sample, which all metrics below share."""
+
+    def derive() -> List[float]:
+        _DERIVATIONS.append(sample.sample_id)
+        return sorted(sample["objects"])
+
+    return sample.memo("objects", derive)
+
+
+class _NumObjects(Metric):
+    """Counts the objects of the samples."""
+
+    NAME = "num_objects"
+
+    def inputs(self) -> Dict[str, Input]:
+        """Read the object positions."""
+        return {"objects": Input(object, EVALUATED)}
+
+    def compute_sample(self, sample: Sample) -> int:
+        """Count the objects of a sample."""
+        return len(_objects(sample))
+
+    def aggregate(self, aggregation: Aggregation) -> Dict[str, Any]:
+        """Sum the objects of all samples."""
+        return {"_value_": sum(aggregation.records(self.name))}
+
+
+class _ClosestObject(Metric):
+    """Reports the distance of the closest object, scaled by its configuration."""
+
+    NAME = "closest"
+
+    def inputs(self) -> Dict[str, Input]:
+        """Read the ego position and the object positions."""
+        return {"ego": Input(object, EVALUATED), "objects": Input(object, EVALUATED)}
+
+    def default_config(self) -> Dict[str, Any]:
+        """Scale the distances by 1 by default."""
+        return {"scale": 1.0}
+
+    def compute_sample(self, sample: Sample) -> float:
+        """Report the scaled distance of the closest object of a sample."""
+        return min(abs(position - sample["ego"]) for position in _objects(sample)) * self.config["scale"]
+
+    def aggregate(self, aggregation: Aggregation) -> Dict[str, Any]:
+        """Report the closest distance of all samples."""
+        return {"_value_": min(aggregation.records(self.name))}
+
+
+class _FarthestObject(Metric):
+    """Reports the distance of the farthest object, reading an optional map it does not need."""
+
+    NAME = "farthest"
+
+    def inputs(self) -> Dict[str, Input]:
+        """Read the ego position, the object positions and, if published, a map."""
+        return {
+            "ego": Input(object, EVALUATED),
+            "objects": Input(object, EVALUATED),
+            "map": Input(object, CONTEXT, optional=True),
+        }
+
+    def compute_sample(self, sample: Sample) -> float:
+        """Report the distance of the farthest object of a sample."""
+        return max(abs(position - sample["ego"]) for position in _objects(sample))
+
+    def aggregate(self, aggregation: Aggregation) -> Dict[str, Any]:
+        """Report the farthest distance of all samples."""
+        return {"_value_": max(aggregation.records(self.name))}
+
+    def visualization_outputs(self) -> Dict[str, Any]:
+        """Publish the farthest distance."""
+        return {"farthest": float}
+
+    def visualize_sample(self, sample: Sample) -> Dict[str, Any]:
+        """Publish the farthest distance of a sample."""
+        return {"farthest": self.compute_sample(sample)}
+
+
+class _ObjectsPerSample(Metric):
+    """Averages the number of objects per sample, building on the number of objects."""
+
+    NAME = "objects_per_sample"
+
+    def inputs(self) -> Dict[str, Input]:
+        """Read the object positions, which the number of objects is counted from."""
+        return {"objects": Input(object, EVALUATED)}
+
+    def requires(self):
+        """Build on the number of objects."""
+        return ("num_objects",)
+
+    def aggregate(self, aggregation: Aggregation) -> Dict[str, Any]:
+        """Divide the number of objects by the number of samples."""
+        return {"_value_": aggregation.results["num_objects"]["_value_"] / len(aggregation.entries)}
+
+
+class _EgoSpeed(Metric):
+    """Reports the highest speed of the ego position, which depends on the order and the stamps of the samples."""
+
+    NAME = "speed"
+
+    def inputs(self) -> Dict[str, Input]:
+        """Read the ego position."""
+        return {"ego": Input(object, EVALUATED)}
+
+    def compute_sample(self, sample: Sample) -> tuple:
+        """Record the stamp and the ego position of a sample."""
+        return sample.stamp, sample["ego"]
+
+    def aggregate(self, aggregation: Aggregation) -> Dict[str, Any]:
+        """Differentiate the ego positions of each sequence of samples."""
+        speeds = []
+        for sequence in aggregation.sequences():
+            records = aggregation.records(self.name, sequence)
+            speeds += [
+                abs(ego - previous_ego) / (stamp - previous)
+                for (previous, previous_ego), (stamp, ego) in zip(records, records[1:])
+            ]
+        return {"_value_": max(speeds, default=None)}
+
+
+class _Census(Metric):
+    """Internal metric counting the samples, which other metrics require."""
+
+    NAME = "census"
+    INTERNAL = True
+
+    def inputs(self) -> Dict[str, Input]:
+        """Read the object positions."""
+        return {"objects": Input(object, EVALUATED)}
+
+    def aggregate(self, aggregation: Aggregation) -> Dict[str, Any]:
+        """Count the samples."""
+        return {"_value_": len(aggregation.entries)}
+
+
+class _SampleShare(Metric):
+    """Reports the share of the scene's samples among all recorded samples, building on the internal census."""
+
+    NAME = "share"
+
+    def inputs(self) -> Dict[str, Input]:
+        """Read the object positions."""
+        return {"objects": Input(object, EVALUATED)}
+
+    def requires(self):
+        """Build on the census."""
+        return ("census",)
+
+    def aggregate(self, aggregation: Aggregation) -> Dict[str, Any]:
+        """Divide the samples by all recorded samples."""
+        return {"_value_": aggregation.results["census"]["_value_"] / len(aggregation.recorded_entries)}
+
+
+class _SelfRequiring(_NumObjects):
+    """Metric that requires itself, which cannot be computed."""
+
+    def requires(self):
+        """Require itself."""
+        return ("num_objects",)
+
+
+class _ObjectsAsContext(_NumObjects):
+    """Metric declaring the objects in another role than the other metrics do."""
+
+    NAME = "objects_as_context"
+
+    def inputs(self) -> Dict[str, Input]:
+        """Read the object positions as context."""
+        return {"objects": Input(object, CONTEXT)}
+
+
+class _ComposedEvaluation(Evaluation):
+    """Evaluation composed of the minimal metrics above, with a group of proximity metrics."""
+
+    HEADLINE_METRIC = "num_objects"
+
+    def __init__(self, blocks=None, evaluation_config=None) -> None:
+        """Compose the given metrics, the default ones if none are given."""
+        super().__init__(name="composed", description="composed of metric building blocks")
+        self._blocks = blocks
+        self._evaluation_config = {"unit": "m"} if evaluation_config is None else evaluation_config
+
+    def metrics(self):
+        """Compose the evaluation of the given or the default metrics."""
+        if self._blocks is not None:
+            return self._blocks
+        return [_NumObjects(), MetricGroup("proximity", [_ClosestObject(), _FarthestObject()]), _ObjectsPerSample(), _EgoSpeed()]
+
+    def default_config(self) -> Dict[str, Any]:
+        """Configure the evaluation-level entries given on construction."""
+        return dict(self._evaluation_config)
+
+
+def _record(evaluation: Evaluation, samples) -> Evaluation:
+    """Record ``(scene_id, stamp, ego, objects)`` samples in a composed evaluation."""
+    for index, (scene_id, stamp, ego, objects) in enumerate(samples):
+        evaluation.record_sample(sample_id=str(index), scene_id=scene_id, stamp=stamp, ego=ego, objects=objects, map=None)
+    return evaluation
+
+
+_SAMPLES = [("a", 0.0, 0.0, [1.0, 4.0]), ("a", 0.5, 1.0, [3.0]), ("b", 1.0, 5.0, [2.0, 9.0])]
+
+
+class TestComposedEvaluation:
+    """Tests computing, selecting and reporting the metrics an evaluation is composed of."""
+
+    def setup_method(self):
+        """Forget the objects derived by previous tests."""
+        _DERIVATIONS.clear()
+
+    def test_reports_all_metrics_by_default(self):
+        """Without a selection, every metric is computed and reported, those of a group nested under its name."""
+        metrics = _record(_ComposedEvaluation(), _SAMPLES).finalize()["metrics"]
+
+        assert metrics == {
+            "_value_": 5,
+            "num_objects": {"_value_": 5},
+            "proximity": {"closest": {"_value_": 1.0}, "farthest": {"_value_": 4.0}},
+            "objects_per_sample": {"_value_": 5 / 3},
+            "speed": {"_value_": 2.0},
+        }
+
+    def test_metrics_are_aggregated_per_scene(self):
+        """The metrics of a scene are aggregated over its samples only."""
+        scenes = _record(_ComposedEvaluation(), _SAMPLES).finalize()["scenes"]
+
+        assert scenes["a"]["metrics"]["num_objects"] == {"_value_": 3}
+        assert scenes["b"]["metrics"]["proximity"]["farthest"] == {"_value_": 4.0}
+
+    def test_selecting_a_group_selects_its_metrics(self):
+        """A group is selected by its name."""
+        evaluation = _ComposedEvaluation()
+        evaluation.configure({"metrics": ["proximity"]})
+
+        assert list(evaluation.selected_metrics()) == ["proximity.closest", "proximity.farthest"]
+
+    def test_selecting_a_metric_of_a_group(self):
+        """A single metric of a group is selected as '<group>.<metric>'."""
+        evaluation = _ComposedEvaluation()
+        evaluation.configure({"metrics": ["proximity.closest"]})
+
+        assert _record(evaluation, _SAMPLES).finalize()["metrics"] == {
+            "_value_": None,
+            "proximity": {"closest": {"_value_": 1.0}},
+        }
+
+    def test_reads_only_the_topics_of_the_computed_metrics(self):
+        """An evaluation subscribes to the inputs of the metrics it computes, the launch file remaps all of them."""
+        evaluation = _ComposedEvaluation()
+        evaluation.configure({"metrics": ["num_objects"]})
+
+        assert list(evaluation.inputs()) == ["objects"]
+        assert list(evaluation.available_inputs()) == ["objects", "ego", "map"]
+
+    def test_inputs_keep_their_roles_and_optionality(self):
+        """The inputs carry the role and optionality their metrics declare."""
+        inputs = _ComposedEvaluation().inputs()
+
+        assert inputs["objects"] == Input(object, EVALUATED)
+        assert inputs["map"] == Input(object, CONTEXT, optional=True)
+
+    def test_required_metric_is_computed_but_not_reported(self):
+        """A metric another one builds on is computed first, but only reported if selected itself."""
+        evaluation = _ComposedEvaluation()
+        evaluation.configure({"metrics": ["objects_per_sample"]})
+
+        metrics = _record(evaluation, _SAMPLES).finalize()["metrics"]
+
+        assert list(evaluation.computed_metrics()) == ["num_objects", "objects_per_sample"]
+        assert metrics == {"_value_": 5, "objects_per_sample": {"_value_": 5 / 3}}
+
+    def test_headline_is_only_reported_while_its_metric_is_computed(self):
+        """Without its headline metric, an evaluation reports no overall value."""
+        evaluation = _ComposedEvaluation()
+        evaluation.configure({"metrics": ["proximity"]})
+
+        assert _record(evaluation, _SAMPLES).finalize()["metrics"]["_value_"] is None
+
+    def test_internal_metric_is_computed_for_others_only(self):
+        """An internal metric provides data for others, but is neither selectable nor reported."""
+        evaluation = _ComposedEvaluation(blocks=[_Census(), _SampleShare()])
+
+        results = _record(evaluation, _SAMPLES).finalize()
+
+        assert evaluation.config["metrics"] == ["share"]
+        assert list(evaluation.computed_metrics()) == ["census", "share"]
+        assert results["metrics"] == {"_value_": None, "share": {"_value_": 1.0}}
+        assert results["scenes"]["a"]["metrics"]["share"] == {"_value_": 2 / 3}
+        with pytest.raises(ValueError, match="has no metric 'census'"):
+            evaluation.configure({"metrics": ["census"]})
+
+    def test_metrics_share_the_data_they_derive_from_a_sample(self):
+        """All metrics of a sample derive its objects only once."""
+        _record(_ComposedEvaluation(), _SAMPLES[:1])
+
+        assert _DERIVATIONS == ["0"]
+
+    def test_visualization_reuses_the_recorded_sample(self):
+        """Visualizing the sample just recorded reuses the data the metrics derived from it."""
+        evaluation = _ComposedEvaluation()
+        messages = {"ego": 0.0, "objects": [1.0, 4.0], "map": None}
+        evaluation.record_sample(sample_id="0", stamp=0.0, **messages)
+
+        visualization = evaluation.visualize_sample(sample_id="0", **messages)
+
+        assert evaluation.visualization_outputs() == {"farthest": float}
+        assert visualization == {"farthest": 4.0}
+        assert _DERIVATIONS == ["0"]
+
+    def test_temporal_metric_is_computed_per_sequence(self):
+        """The ego jumps between the scenes, which is no speed, as the scenes are no sequence."""
+        evaluation = _record(_ComposedEvaluation(), _SAMPLES)
+
+        assert evaluation.finalize()["metrics"]["speed"] == {"_value_": 2.0}
+
+    @pytest.mark.parametrize(
+        "selection, reason",
+        [(["unknown"], "has no metric 'unknown'"), ([], "selects no metric"), (["proximity.unknown"], "has no metric")],
+    )
+    def test_rejects_a_selection_of_no_metric(self, selection, reason):
+        """A selection must name metrics or groups of the evaluation."""
+        with pytest.raises(ValueError, match=reason):
+            _ComposedEvaluation().configure({"metrics": selection})
+
+    def test_rejects_a_requirement_of_an_unknown_metric(self):
+        """A metric can only build on metrics of its evaluation."""
+        with pytest.raises(ValueError, match="requires unknown metric 'num_objects'"):
+            _ComposedEvaluation(blocks=[_ObjectsPerSample()]).configure()
+
+    def test_rejects_a_metric_requiring_itself(self):
+        """A metric cannot build on its own result."""
+        with pytest.raises(ValueError, match="requires itself"):
+            _ComposedEvaluation(blocks=[_SelfRequiring()]).configure()
+
+    def test_rejects_metrics_of_the_same_name(self):
+        """Each metric is reported and configured under a name of its own."""
+        with pytest.raises(ValueError, match="declares 'num_objects' twice"):
+            _ComposedEvaluation(blocks=[_NumObjects(), _NumObjects()]).available_metrics()
+
+    def test_rejects_an_input_declared_differently_by_two_metrics(self):
+        """Metrics reading the same topic must agree on its type, role and optionality."""
+        with pytest.raises(ValueError, match="reads input 'objects' as"):
+            _ComposedEvaluation(blocks=[_NumObjects(), _ObjectsAsContext()]).inputs()
+
+    def test_rejects_visualization_outputs_of_the_same_name(self):
+        """Two metrics cannot publish their visualization on the same topic."""
+
+        class _OtherFarthest(_FarthestObject):
+            NAME = "other_farthest"
+
+        with pytest.raises(ValueError, match="publishes visualization output 'farthest' twice"):
+            _ComposedEvaluation(blocks=[_FarthestObject(), _OtherFarthest()]).visualization_outputs()
+
+
+class TestConfiguration:
+    """Tests configuring an evaluation and its metrics."""
+
+    def test_default_configuration_holds_the_selection_and_every_metric(self):
+        """The configuration selects all metrics and holds the entries of each, nested under its group."""
+        assert _ComposedEvaluation().config_defaults() == {
+            "max_sample_interval": 1.0,
+            "unit": "m",
+            "metrics": ["num_objects", "proximity", "objects_per_sample", "speed"],
+            "proximity": {"closest": {"scale": 1.0}},
+        }
+
+    def test_configures_a_metric(self):
+        """A configured entry reaches its metric, an integer is accepted for a floating-point entry."""
+        evaluation = _ComposedEvaluation()
+        evaluation.configure({"proximity": {"closest": {"scale": 2}}})
+
+        assert evaluation.available_metrics()["proximity.closest"].config == {"scale": 2.0}
+        assert _record(evaluation, _SAMPLES).finalize()["metrics"]["proximity"]["closest"] == {"_value_": 2.0}
+
+    def test_unconfigured_entries_keep_their_defaults(self):
+        """Only the configured entries change."""
+        effective = _ComposedEvaluation().configure({"max_sample_interval": 2.0})
+
+        assert effective["max_sample_interval"] == 2.0
+        assert effective["proximity"] == {"closest": {"scale": 1.0}}
+
+    def test_evaluation_is_configured_with_its_defaults_on_first_use(self):
+        """An evaluation that is never configured uses its default configuration."""
+        assert _ComposedEvaluation().config == _ComposedEvaluation().config_defaults()
+
+    @pytest.mark.parametrize(
+        "config, reason",
+        [
+            ({"proximity": {"closest": {"offset": 1.0}}}, r"has no configuration \['proximity.closest.offset'\]"),
+            ({"max_sample_interval": "long"}, "to be of type float"),
+            ({"max_sample_interval": True}, "to be of type float"),
+            ({"metrics": "proximity"}, "to be a list"),
+            ({"proximity": 1.0}, "to be nested entries"),
+        ],
+    )
+    def test_rejects_an_invalid_configuration(self, config, reason):
+        """Unknown entries and entries of another type than their default are rejected."""
+        with pytest.raises(ValueError, match=reason):
+            _ComposedEvaluation().configure(config)
+
+    def test_rejects_an_evaluation_level_entry_named_like_a_metric(self):
+        """Evaluation-level entries and metrics share the namespace of the configuration."""
+        with pytest.raises(ValueError, match="next to metrics of the same name"):
+            _ComposedEvaluation(evaluation_config={"speed": 1.0}).config_defaults()
+
+    def test_evaluation_without_building_blocks_is_configured_too(self):
+        """An evaluation computing its metrics itself has the configuration every evaluation has."""
+        assert CountingEvaluation().config == {"max_sample_interval": 1.0}
+
+    def test_flattened_configuration_names_nested_entries_by_their_joined_keys(self):
+        """ROS parameters name nested entries by their keys joined with '.', lists are values."""
+        config = {"metrics": ["ap"], "ap": {"min_precision": 0.1, "matching_thresholds": [0.5, 1.0]}}
+
+        flattened = flatten_config(config, "object_detection_3d.")
+
+        assert flattened == {
+            "object_detection_3d.metrics": ["ap"],
+            "object_detection_3d.ap.min_precision": 0.1,
+            "object_detection_3d.ap.matching_thresholds": [0.5, 1.0],
+        }
+        assert unflatten_config(flatten_config(config)) == config
+
+
+class TestResultsDescription:
+    """Tests describing how the results were computed next to the metrics."""
+
+    def test_results_describe_the_inputs_the_configuration_and_the_sampling(self):
+        """The results name the topic and role of each input and hold the configuration and the sampling."""
+        evaluation = _ComposedEvaluation()
+        evaluation.input_topics = {"objects": "/simulation/objects"}
+
+        results = _record(evaluation, _SAMPLES).finalize()
+
+        assert results["inputs"]["objects"] == {
+            "type": "object",
+            "role": "evaluated",
+            "optional": False,
+            "topic": "/simulation/objects",
+        }
+        assert results["inputs"]["map"]["role"] == "context"
+        assert results["config"] == evaluation.config
+        assert results["sampling"] == {"num_sequences": 2, "period": 0.5, "num_gaps": 0, "max_interval": 0.5}
+
+    def test_inputs_of_an_evaluation_without_building_blocks_have_roles(self):
+        """Inputs are evaluated, ground truth is the reference."""
+        inputs = _evaluation_of([("0", "scene_a", 1, 1)]).finalize()["inputs"]
+
+        assert {name: description["role"] for name, description in inputs.items()} == {
+            "prediction": "evaluated",
+            "label": "reference",
+        }
