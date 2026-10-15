@@ -1,6 +1,7 @@
 # Copyright Thinking Cars GmbH
 # SPDX-License-Identifier: Apache-2.0
 
+import array
 import json
 import signal
 import time
@@ -11,7 +12,8 @@ from typing import Any, Callable, Collection, Optional, Sequence, Union
 import rclpy
 import rclpy.exceptions
 from autonomy_datasets_msgs.srv import RequestSamples
-from autonomy_evaluation.evaluations import load_evaluation
+from autonomy_evaluation.evaluations import Evaluation, load_evaluation, ROLES
+from autonomy_evaluation.evaluations.Evaluation import CONFIG_SEPARATOR, flatten_config, unflatten_config
 from rcl_interfaces.msg import FloatingPointRange, IntegerRange, ParameterDescriptor, SetParametersResult
 from rclpy.clock import Clock, ClockType
 from rclpy.executors import ExternalShutdownException
@@ -393,10 +395,11 @@ class AutonomyEvaluation(Node):
 
         self.data_subscriptions: dict[str, Subscription] = {}
 
-        # load the selected evaluation and the topics it reads
+        # load the selected evaluation, configure it, and determine the topics its computed metrics read
         try:
             evaluation_handler = load_evaluation(self.evaluation)
-            inputs = evaluation_handler.all_inputs()
+            self.configure_evaluation(evaluation_handler)
+            inputs = evaluation_handler.inputs()
         except ValueError as exception:
             self.get_logger().fatal(f"{exception}, exiting")
             raise SystemExit(1)
@@ -417,13 +420,13 @@ class AutonomyEvaluation(Node):
             callback=self.evaluate_sample,
             queue_size=_SYNCHRONIZER_QUEUE_SIZE,
             tolerance=self.sync_tolerance,
-            optional_topics=list(evaluation_handler.optional_ground_truth()),
+            optional_topics=[name for name, declared in inputs.items() if declared.optional],
             expects_message=self.is_published,
         )
-        derived_topics = evaluation_handler.derived_topics()
-        for name, msg_type in inputs.items():
+        derived_topics = {name: declared.next_to for name, declared in inputs.items() if declared.next_to is not None}
+        for name, declared in inputs.items():
             self.data_subscriptions[name] = self.create_subscription(
-                msg_type,
+                declared.msg_type,
                 self.input_topic(name, derived_topics),
                 partial(self.receive_message, name),
                 qos_profile=QoSProfile(
@@ -433,19 +436,23 @@ class AutonomyEvaluation(Node):
                     depth=10,
                 ),
             )
-        roles = {
-            "input": evaluation_handler.required_inputs(),
-            "ground truth": evaluation_handler.required_ground_truth(),
-            "optional ground truth": evaluation_handler.optional_ground_truth(),
+        evaluation_handler.input_topics = {
+            name: subscription.topic_name for name, subscription in self.data_subscriptions.items()
         }
-        for role, names in roles.items():
-            if names:
-                topics = ", ".join(f"'{name}' from '{self.data_subscriptions[name].topic_name}'" for name in names)
-                self.get_logger().info(f"Evaluating {role} {topics}")
+        for role in ROLES:
+            topics = ", ".join(
+                f"'{name}' from '{self.data_subscriptions[name].topic_name}'" + (" (optional)" if declared.optional else "")
+                for name, declared in inputs.items()
+                if declared.role == role
+            )
+            if topics:
+                self.get_logger().info(f"Reading {role} {topics}")
 
         # Messages without a header are stamped when they are received, which the messages of
         # other inputs can only match within a tolerance
-        unstamped_inputs = [name for name, msg_type in inputs.items() if "header" not in msg_type.get_fields_and_field_types()]
+        unstamped_inputs = [
+            name for name, declared in inputs.items() if "header" not in declared.msg_type.get_fields_and_field_types()
+        ]
         if unstamped_inputs:
             self.get_logger().info(f"Stamping the messages of {unstamped_inputs} on reception, as they carry no header")
             if len(inputs) > 1 and not self.sync_tolerance:
@@ -513,6 +520,40 @@ class AutonomyEvaluation(Node):
             clock=Clock(clock_type=ClockType.STEADY_TIME),
         )
         self.get_logger().info(f"Requesting samples to evaluate from '{self.sample_request_service}'")
+
+    def configure_evaluation(self, evaluation: Evaluation):
+        """Configures the evaluation, e.g. which metrics it computes, by the ROS parameters named after it
+
+        Every entry of the configuration of the evaluation is a read-only parameter named
+        '<evaluation>.<entry>', e.g. 'object_detection_3d.ap.matching_thresholds' or
+        'closed_loop.metrics', whose default is the default of the entry. Parameters are typed
+        dynamically, so that a parameter file may give an integer for a floating-point entry; the
+        evaluation checks the type of each entry against its default instead.
+
+        Args:
+            evaluation (Evaluation): evaluation to configure
+
+        Raises:
+            ValueError: if an entry is of the wrong type or selects no or an unknown metric
+        """
+        prefix = f"{evaluation.name}{CONFIG_SEPARATOR}"
+        configured = {}
+        for name, default in flatten_config(evaluation.config_defaults(), prefix).items():
+            param_desc = ParameterDescriptor(
+                description=f"configuration '{name[len(prefix):]}' of evaluation '{evaluation.name}', see its documentation",
+                read_only=True,
+                dynamic_typing=True,
+            )
+            value = self.declare_parameter(name, default, param_desc).value
+            # array parameters are read as arrays of their element type
+            configured[name[len(prefix) :]] = list(value) if isinstance(value, array.array) else value
+
+        evaluation.configure(unflatten_config(configured))
+        if evaluation.available_metrics():
+            self.get_logger().info(
+                f"Computing the metrics {list(evaluation.selected_metrics())} of evaluation '{evaluation.name}'"
+            )
+        self.get_logger().info(f"Configured evaluation '{evaluation.name}' with {json.dumps(evaluation.config)}")
 
     def input_topic(self, name: str, derived_topics: dict[str, tuple[str, str]]) -> str:
         """Determines the topic an input of the evaluation is subscribed on
@@ -799,7 +840,7 @@ class AutonomyEvaluation(Node):
         sample_id = f"{stamp[0]}.{stamp[1]:09d}"
         self.get_logger().debug(f"Evaluating sample '{sample_id}'")
 
-        result = self.evaluation_handler.record_sample(sample_id=sample_id, **messages)
+        result = self.evaluation_handler.record_sample(sample_id=sample_id, stamp=_to_nanoseconds(stamp) * 1e-9, **messages)
         self.num_evaluated_samples += 1
         # attribute the sample to the scene the dataset published it from, which the dataset may
         # only report after the sample has been evaluated; with an external sample source, the

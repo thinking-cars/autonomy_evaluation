@@ -11,23 +11,33 @@ an automated driving deployment is benchmarked on.
 
 ### `autonomy_evaluation`
 
-The node runs the evaluation selected by `evaluation`, either one of this package by its name or one implemented in another package as `<module>:<class>` (see [Adding more Evaluations](../docs/IMPLEMENTATION.md#adding-more-evaluations)). Each evaluation declares the topics it reads: its _inputs_ from the system under test, and, if it compares them with a reference, its _ground truth_. The node subscribes to all of them, each on its node-relative name, which the launch file remaps onto the topic given by the launch argument of the same name, e.g. `prediction:=/object_list/prediction`. A topic without such an argument is subscribed in the private namespace of the node. The node logs which topic it evaluates as input and which as ground truth. A topic an evaluation declares as optional, e.g. meta information that not every dataset publishes, is only waited for while it has a publisher; otherwise, the samples are evaluated without it.
+The node runs the evaluation selected by `evaluation`, either one of this package by its name or one implemented in another package as `<module>:<class>` (see [Adding more Evaluations](../docs/IMPLEMENTATION.md#adding-more-evaluations)). An evaluation is composed of metrics, of which its configuration selects those it computes. Each metric declares the topics it reads, each in a role: _evaluated_, i.e. the output or behavior of the system under test, _reference_, i.e. the ground truth the evaluated topics are compared with, or _context_, i.e. what a metric needs without evaluating or comparing it, e.g. the road users the ego vehicle interacts with. The node subscribes to the topics of the computed metrics, each on its node-relative name, which the launch file remaps onto the topic given by the launch argument of the same name, e.g. `prediction:=/object_list/prediction`. A topic without such an argument is subscribed in the private namespace of the node. The node logs each topic it reads with its role. A topic a metric declares as optional, e.g. meta information that not every dataset publishes, is only waited for while it has a publisher; otherwise, the samples are evaluated without it.
 
-| Evaluation | Inputs | Ground truth |
-| --- | --- | --- |
-| `object_detection_3d` | `prediction` (`perception_msgs/ObjectList`) | `label` (`perception_msgs/ObjectList`); optionally `label_meta_info` (`autonomy_datasets_msgs/ObjectListMetaInfo`, subscribed next to `label` on `<label topic>/meta_info`) |
+| Evaluation | Evaluated | Reference | Context |
+| --- | --- | --- | --- |
+| `object_detection_3d` | `prediction` (`perception_msgs/ObjectList`) | `label` (`perception_msgs/ObjectList`); optionally `label_meta_info` (`autonomy_datasets_msgs/ObjectListMetaInfo`, subscribed next to `label` on `<label topic>/meta_info`) | - |
+
+Each evaluation is configured by parameters named `<evaluation>.<entry>`, e.g. `object_detection_3d.metrics` selecting the metrics it computes, which are usually set in a parameter file passed via the `config` launch argument. Nested entries are nested in the parameter file. Every entry that is not set keeps its default; the entries of each evaluation are documented in [IMPLEMENTATION.md](../docs/IMPLEMENTATION.md), their general structure in [Configuration](../docs/IMPLEMENTATION.md#configuration).
+
+```yaml
+/**:
+  ros__parameters:
+    object_detection_3d:
+      max_sample_interval: 2.0  # samples further apart belong to different sequences
+```
 
 The messages of all topics that belong to the same sample are matched by their stamp and evaluated together. By default, only messages with exactly the same stamp are matched, as the dataset stamps all messages of a sample with its recording time and a system under test stamps its output with the stamp of the input it processed. Set `sync_tolerance` to match topics whose stamps differ, e.g. those a simulation publishes at slightly different times or at different rates. A message without a header, e.g. a `std_msgs/Bool`, is stamped with the time it is received at.
 
 With `sample_source` set to `dataset`, the default, the node requests the samples it evaluates from the dataset, using the `request_samples` service of [autonomy_datasets](https://github.com/thinking-cars/autonomy_datasets), which publishes them and responds once they have been published. By default one sample is requested at a time, so the dataset only publishes the next sample once the system under test has delivered its output for the current one and the node has evaluated it. Increase `samples_per_request` to publish samples in batches, set it to `0` to publish the whole dataset with a single request, or list the IDs of individual samples in `sample_ids` to evaluate only those.
 
-Once the dataset reports that all requested samples have been published, or its node has shut down after publishing its last sample, the per-sample metrics are aggregated over all evaluated samples (`metrics`) and for the samples of each scene the dataset published them from (`scenes`, matched with the samples via the `published_scene_ids` of the responses). The metrics are logged, and written to a JSON file if `results_path` is set. Samples that are not evaluated within `evaluation_timeout` seconds of being published, e.g. because the system under test skipped them, are left out.
+Once the dataset reports that all requested samples have been published, or its node has shut down after publishing its last sample, the per-sample metrics are aggregated over all evaluated samples (`metrics`) and for the samples of each scene the dataset published them from (`scenes`, matched with the samples via the `published_scene_ids` of the responses). The metrics are logged, and written to a JSON file if `results_path` is set, together with the topics that were read and their roles (`inputs`), the configuration of the evaluation (`config`), and how regularly the samples were evaluated, including gaps of missing samples (`sampling`, see [Sequences of samples](../docs/IMPLEMENTATION.md#sequences-of-samples)). Samples that are not evaluated within `evaluation_timeout` seconds of being published, e.g. because the system under test skipped them, are left out.
 
 ```bash
 ros2 launch autonomy_evaluation autonomy_evaluation.launch.py \
   prediction:=/object_list/prediction \
   label:=/object_list/lidar_01 \
   request_samples:=/datasets/request_samples \
+  config:=/config/object_detection_3d.yml \
   results_path:=/results/object_detection_3d.json
 ```
 
@@ -76,6 +86,7 @@ flowchart LR
 | `sample_ids` | `string` | - | comma-separated IDs of the dataset samples to evaluate (e.g. '0,10,20'); if empty, all samples of the dataset are evaluated |
 | `evaluation_timeout` | `float` | `60.0` | seconds to wait for a published sample to be evaluated before continuing without it |
 | `results_path` | `string` | - | path of the JSON file the evaluation results are written to; results are only logged if empty |
+| `<evaluation>.<entry>` | various | see evaluation | configuration of the evaluation, e.g. `object_detection_3d.metrics` selecting the metrics it computes; read-only |
 
 ## Launch Files
 
@@ -85,6 +96,7 @@ flowchart LR
 | --- | --- | --- |
 | `request_samples` | `"~/request_samples"` | service of the dataset node used to request the samples to evaluate |
 | `evaluation` | `"object_detection_3d"` | evaluation to run |
+| `config` | `""` | path of a ROS parameter file configuring the evaluation by parameters named `<evaluation>.<entry>` (default configuration if empty) |
 | `name` | `"autonomy_evaluation"` | node name |
 | `namespace` | `""` | node namespace |
 | `log_level` | `"info"` | ros logging level |

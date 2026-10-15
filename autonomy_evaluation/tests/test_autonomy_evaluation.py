@@ -6,7 +6,8 @@
 The node itself drives the evaluation via the ``request_samples`` service of the dataset and is
 covered by running it against a dataset. Tested here are the parsing of the samples to evaluate,
 as an unparsable value stops the node, the topics the inputs of an evaluation are subscribed on,
-the stamping of received messages, the matching of the received input messages into the samples
+the configuration of the evaluation by the ROS parameters named after it, the stamping of received
+messages, the matching of the received input messages into the samples
 to evaluate, which has to hold up when the dataset continues with a scene that was recorded before
 the scene played before it, has to match topics of a simulation within a tolerance and must not wait
 for an optional topic that is not published, the evaluation of a sample, which requests the next
@@ -18,12 +19,14 @@ evaluation as incomplete.
 
 from __future__ import annotations
 
+import array
 from collections import deque
 from types import SimpleNamespace
 
 import pytest
 from autonomy_evaluation import autonomy_evaluation
 from autonomy_evaluation.autonomy_evaluation import AutonomyEvaluation, parse_sample_ids, SampleSynchronizer
+from autonomy_evaluation.evaluations import Aggregation, EVALUATED, Evaluation, Input, Metric, MetricGroup
 
 _TOPICS = ["prediction", "label", "label_meta_info"]
 
@@ -293,9 +296,9 @@ class _RecordingEvaluationHandler:
         """Start without recorded samples."""
         self.recorded_samples: list = []
 
-    def record_sample(self, sample_id: str, **messages) -> dict:
+    def record_sample(self, sample_id: str, stamp: float = None, **messages) -> dict:
         """Record a sample the way the evaluation stores it, still without a scene."""
-        entry = {"sample_id": sample_id, "scene_id": None, "metrics": {}}
+        entry = {"sample_id": sample_id, "scene_id": None, "stamp": stamp, "metrics": {}}
         self.recorded_samples.append(entry)
         self.recorded_messages = messages
         return entry
@@ -337,6 +340,14 @@ class TestEvaluateSample:
 
         assert node.evaluation_handler.recorded_messages == messages
         assert node.evaluation_handler.recorded_samples[0]["sample_id"] == "1531885320.049418000"
+
+    def test_passes_the_stamp_of_the_sample_in_seconds(self):
+        """Metrics that depend on the time between samples, e.g. a jerk, read the stamp of each sample."""
+        node = _evaluating_node(requests_samples=True)
+
+        AutonomyEvaluation.evaluate_sample(node, _NEXT_SCENE[0], _sample_messages(_NEXT_SCENE[0]))
+
+        assert node.evaluation_handler.recorded_samples[0]["stamp"] == pytest.approx(1531885320.049418, abs=1e-6)
 
     def test_evaluation_requests_the_next_samples_after_evaluating_one(self):
         """With the dataset as sample source, the evaluation continues with the next samples on its own."""
@@ -478,6 +489,95 @@ class TestAdvanceEvaluation:
         assert node.sample_request_client.removed_requests == [request]
         assert node.pending_request is None
         assert node.actions == ["finalize", "shutdown"]
+
+
+class _Distance(Metric):
+    """Metric with a list and a floating-point entry in its configuration."""
+
+    NAME = "distance"
+
+    def inputs(self) -> dict:
+        """Read the objects."""
+        return {"objects": Input(object, EVALUATED)}
+
+    def default_config(self) -> dict:
+        """Configure thresholds and a scale."""
+        return {"thresholds": [0.5, 1.0], "scale": 1.0}
+
+    def aggregate(self, aggregation: Aggregation) -> dict:
+        """Report no value, as only the configuration is tested."""
+        return {"_value_": None}
+
+
+class _Speed(_Distance):
+    """Metric of a group, configured like the distance."""
+
+    NAME = "speed"
+
+
+class _ConfigurableEvaluation(Evaluation):
+    """Evaluation of a configurable metric and a group of another one."""
+
+    def __init__(self):
+        """Name the evaluation."""
+        super().__init__(name="configurable")
+
+    def metrics(self):
+        """Compose the evaluation of the distance and a group holding the speed."""
+        return [_Distance(), MetricGroup("dynamics", [_Speed()])]
+
+
+class TestConfigureEvaluation:
+    """Tests configuring the evaluation by the ROS parameters named after it."""
+
+    @staticmethod
+    def _node(parameters: dict) -> SimpleNamespace:
+        """Stub a node started with the given parameter values, recording the parameters it declares."""
+        node = SimpleNamespace(declared={}, get_logger=lambda logger=_FakeLogger(): logger)
+
+        def declare_parameter(name, default, descriptor):
+            node.declared[name] = descriptor
+            return SimpleNamespace(value=parameters.get(name, default))
+
+        node.declare_parameter = declare_parameter
+        return node
+
+    def test_declares_a_read_only_parameter_per_entry_named_after_the_evaluation(self):
+        """Each entry of the configuration, nested ones joined by '.', is a parameter of the node."""
+        node = self._node({})
+
+        AutonomyEvaluation.configure_evaluation(node, _ConfigurableEvaluation())
+
+        assert sorted(node.declared) == [
+            "configurable.distance.scale",
+            "configurable.distance.thresholds",
+            "configurable.dynamics.speed.scale",
+            "configurable.dynamics.speed.thresholds",
+            "configurable.max_sample_interval",
+            "configurable.metrics",
+        ]
+        assert all(descriptor.read_only and descriptor.dynamic_typing for descriptor in node.declared.values())
+
+    def test_configures_the_evaluation_by_its_parameters(self):
+        """Parameter values reach the metrics, array parameters and integers for floating-point entries included."""
+        evaluation = _ConfigurableEvaluation()
+        node = self._node(
+            {
+                "configurable.metrics": ["dynamics"],
+                "configurable.dynamics.speed.scale": 2,
+                "configurable.dynamics.speed.thresholds": array.array("d", [3.0]),
+            }
+        )
+
+        AutonomyEvaluation.configure_evaluation(node, evaluation)
+
+        assert list(evaluation.selected_metrics()) == ["dynamics.speed"]
+        assert evaluation.available_metrics()["dynamics.speed"].config == {"thresholds": [3.0], "scale": 2.0}
+
+    def test_rejects_a_parameter_of_the_wrong_type(self):
+        """A value the evaluation cannot use stops the node with the reason."""
+        with pytest.raises(ValueError, match="'distance.scale' to be of type float"):
+            AutonomyEvaluation.configure_evaluation(self._node({"configurable.distance.scale": "far"}), _ConfigurableEvaluation())
 
 
 class TestReceiveMessage:

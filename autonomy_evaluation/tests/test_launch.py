@@ -12,7 +12,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from autonomy_evaluation.evaluations import load_evaluation
+from autonomy_evaluation.evaluations import Aggregation, CONTEXT, EVALUATED, Evaluation, Input, load_evaluation, Metric
 
 _LAUNCH_FILE = Path(__file__).resolve().parents[1] / "launch" / "autonomy_evaluation.launch.py"
 
@@ -52,3 +52,50 @@ class TestInputRemappings:
         remappings = self.input_remappings(self.evaluation, {"label_meta_info": "/meta_info"})
 
         assert ("label_meta_info", "/meta_info") in remappings
+
+
+class _Speed(Metric):
+    """Metric reading the ego state only."""
+
+    NAME = "speed"
+
+    def inputs(self) -> dict:
+        """Read the ego state."""
+        return {"ego_data": Input(object, EVALUATED)}
+
+    def aggregate(self, aggregation: Aggregation) -> dict:
+        """Report no value, as only the topics are tested."""
+        return {"_value_": None}
+
+
+class _Distance(_Speed):
+    """Metric reading the ego state and the objects around it."""
+
+    NAME = "distance"
+
+    def inputs(self) -> dict:
+        """Read the ego state and the objects."""
+        return {"ego_data": Input(object, EVALUATED), "objects": Input(object, CONTEXT)}
+
+
+class _PlannerEvaluation(Evaluation):
+    """Evaluation of a speed and a distance metric, of which only the speed is selected."""
+
+    def __init__(self):
+        """Select the speed only."""
+        super().__init__(name="planner")
+        self.configure({"metrics": ["speed"]})
+
+    def metrics(self):
+        """Compose the evaluation of the speed and the distance."""
+        return [_Speed(), _Distance()]
+
+
+class TestInputRemappingsOfSelectedMetrics:
+    """Tests remapping the topics of the metrics an evaluation may compute."""
+
+    def test_remaps_the_topics_of_all_metrics(self):
+        """The metrics are only selected by the configuration the node reads, so the topics of all of them are remapped."""
+        remappings = _launch_module().input_remappings(_PlannerEvaluation(), {"objects": "/simulation/objects"})
+
+        assert remappings == [("ego_data", "~/ego_data"), ("objects", "/simulation/objects")]

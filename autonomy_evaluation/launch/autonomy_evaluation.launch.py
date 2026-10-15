@@ -16,12 +16,14 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def input_remappings(evaluation: Evaluation, launch_configurations: Mapping[str, str]) -> list[tuple[str, str]]:
-    """Remap the topics the evaluation reads onto the topics given by the launch arguments of their names.
+    """Remap the topics the evaluation may read onto the topics given by the launch arguments of their names.
 
-    Every input and ground-truth topic of the evaluation, required or optional, is configured by a launch
-    argument of its name, e.g. ``prediction:=/object_list/prediction``. A topic without such an argument is
-    subscribed in the private namespace of the node, except for a topic published next to another one, which
-    the node derives from the topic of that one.
+    Every topic any metric of the evaluation reads, whatever its role and whether it is optional, is configured by
+    a launch argument of its name, e.g. ``prediction:=/object_list/prediction``. As the metrics the evaluation
+    computes are only selected by its configuration, the topics of all its metrics are remapped; the node only
+    subscribes to those of the computed metrics. A topic without such an argument is subscribed in the private
+    namespace of the node, except for a topic published next to another one, which the node derives from the
+    topic of that one.
 
     Args:
         evaluation (Evaluation): evaluation to run
@@ -30,12 +32,11 @@ def input_remappings(evaluation: Evaluation, launch_configurations: Mapping[str,
     Returns:
         list[tuple[str, str]]: remappings of the node-relative input names
     """
-    derived_topics = evaluation.derived_topics()
     remappings = []
-    for name in evaluation.all_inputs():
+    for name, declared in evaluation.available_inputs().items():
         if name in launch_configurations:
             remappings.append((name, launch_configurations[name]))
-        elif name not in derived_topics:
+        elif declared.next_to is None:
             remappings.append((name, f"~/{name}"))
     return remappings
 
@@ -51,12 +52,15 @@ def launch_node(context: LaunchContext, remappings: list) -> list[Node]:
         list[Node]: node to launch
     """
     evaluation = load_evaluation(LaunchConfiguration("evaluation").perform(context))
+    # a parameter file configures the evaluation, e.g. which metrics it computes, by parameters named after it
+    config = LaunchConfiguration("config").perform(context)
     node = Node(
         package="autonomy_evaluation",
         executable="autonomy_evaluation",
         namespace=LaunchConfiguration("namespace"),
         name=LaunchConfiguration("name"),
         parameters=[
+            *([config] if config else []),
             {"evaluation": LaunchConfiguration("evaluation")},
             {"visualize": ParameterValue(LaunchConfiguration("visualize"), value_type=bool)},
             {"sample_source": LaunchConfiguration("sample_source")},
@@ -94,6 +98,12 @@ def generate_launch_description():
             default_value="object_detection_3d",
             description="name of an evaluation of this package, or '<module>:<class>' of an evaluation implemented in "
             "another package; each topic the evaluation reads is set by an argument of its name, e.g. prediction:=/topic",
+        ),
+        DeclareLaunchArgument(
+            "config",
+            default_value="",
+            description="path of a ROS parameter file configuring the evaluation, e.g. which metrics it computes, by "
+            "parameters named '<evaluation>.<entry>' (default configuration if empty)",
         ),
         DeclareLaunchArgument("name", default_value="autonomy_evaluation", description="node name"),
         DeclareLaunchArgument("namespace", default_value="", description="node namespace"),
