@@ -3,6 +3,7 @@
 This repository supports the following evaluations of automated driving systems:
 
 - [3D Object Detection](#3d-object-detection): 3D bounding-box object detection on the classes of `perception_msgs/ObjectClassification`
+- [Closed-Loop](#closed-loop): driving behavior of the ego vehicle a system under test drives in closed loop, e.g. in a simulation
 
 ### 3D Object Detection
 
@@ -126,6 +127,47 @@ The results hold the `metrics` over all evaluated samples and, under `scenes`, t
 | `detection_score._value_` | Detection score combining the mAP and the available mean TP errors with weights 5-1-1-1-1, normalised by the sum of the weights: `(5·mAP + Σ max(1−mTP,0)) / (5 + number of TP errors)`, `null` without labels. |
 
 The TP errors are measured with a maximum match distance of 2 meters; their means skip `null` classes.
+
+</details>
+
+### Closed-Loop
+
+Evaluates the ego vehicle a system under test drives, e.g. a planner in a closed-loop simulation, by its behavior over the whole run: its comfort, i.e. how smoothly it drives.
+
+| Topic | Type | Role | Description |
+| --- | --- | --- | --- |
+| `ego_data` | `perception_msgs/EgoData` | evaluated | state of the ego vehicle |
+
+The samples usually come from a recorded simulation run, which [autonomy_datasets](https://github.com/thinking-cars/autonomy_datasets) replays with the dataset as sample source, so that they are attributed to the scenes of the recordings and the evaluation ends with the last sample. With `sample_source:=external`, e.g. evaluating a running simulation live, the run ends once the simulation calls the `~/finish` service of the node. Every metric over time is computed per contiguous sequence of samples (see [Sequences of samples](#sequences-of-samples)), and gaps of missing samples are reported under `sampling`.
+
+Metrics are computed based on the following assumptions:
+
+- **Footprints**: the ego vehicle is a rectangle of the `length` and `width` of its `EgoData` around its geometric center, which is the position of its state moved by the `translation_to_geometric_center` of its reference point, rotated by its yaw.
+- **Set entries**: a state entry that `perception_msgs` marks as not set, i.e. `CONTINUOUS_STATE_COVARIANCE_INVALID` on the diagonal of the state covariance, is unavailable. A state without covariance has all its entries set.
+- **Derived quantities**: a quantity the state of the ego vehicle does not set is derived from consecutive samples by finite differences: the yaw rate from the yaw, the accelerations from the velocities in the rotating frame of the vehicle, i.e. `a_lon = d(v_lon)/dt - v_lat·ω` and `a_lat = d(v_lat)/dt + v_lon·ω`. The jerk is always derived from the accelerations. Derived quantities depend on the sampling rate: at a low rate, e.g. the 2 Hz key frames of a dataset, peaks are smoothed out.
+
+#### Configuration
+
+| Entry | Default | Description |
+| --- | --- | --- |
+| `metrics` | `[comfort]` | selected metrics: a group, e.g. `comfort`, or single metrics of a group, e.g. `comfort.jerk` |
+| `max_sample_interval` | `1.0` | seconds between two consecutive samples beyond which they belong to different sequences |
+
+<details>
+<summary>Output metrics</summary>
+
+The results hold the `metrics` over all evaluated samples and, under `scenes`, those of each scene, grouped into `comfort`. Each metric holds its aggregated value under `_value_`, next to its sub-metrics. A value that cannot be computed, e.g. a jerk of single samples, is `null`.
+
+| Metric | Description |
+| - | - |
+| `comfort.acceleration._value_` | Largest magnitude of the acceleration of the ego vehicle in `m/s²`. |
+| `comfort.acceleration.longitudinal.{max,min,rms}` | Strongest longitudinal acceleration, strongest deceleration (negative) and root mean square of the longitudinal acceleration in `m/s²`. |
+| `comfort.acceleration.lateral.{max_abs,rms}` | Largest absolute and root mean square lateral acceleration in `m/s²`. |
+| `comfort.acceleration.{longitudinal,lateral}.sources` | Whether the acceleration was read from the ego state (`state`) or derived (`derived`). |
+| `comfort.jerk._value_` | Largest magnitude of the jerk of the ego vehicle in `m/s³`. |
+| `comfort.jerk.{longitudinal,lateral}.{max_abs,rms}` | Largest absolute and root mean square jerk along and across the heading in `m/s³`. |
+| `comfort.yaw_rate._value_`, `comfort.yaw_rate.rms` | Largest absolute and root mean square yaw rate in `rad/s`. |
+| `comfort.yaw_rate.sources` | Whether the yaw rate was read from the ego state (`state`) or derived (`derived`). |
 
 </details>
 

@@ -5,7 +5,7 @@
 
 Besides the evaluations of this package, an evaluation implemented in another
 package is selected as ``<module>:<class>``, e.g.
-``my_package.evaluations:TimeToCollision``, so that a system under test can be
+``my_package.evaluations:MyPlannerEvaluation``, so that a system under test can be
 evaluated without adding its evaluation to this package.
 """
 
@@ -23,6 +23,10 @@ EVALUATIONS: Dict[str, Tuple[str, str]] = {
     "object_detection_3d": (
         "autonomy_evaluation.evaluations.object_detection.ObjectDetection3D",
         "ObjectDetection3D",
+    ),
+    "closed_loop": (
+        "autonomy_evaluation.evaluations.closed_loop.ClosedLoop",
+        "ClosedLoop",
     ),
 }
 
