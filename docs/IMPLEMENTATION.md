@@ -77,14 +77,39 @@ Metrics are computed based on the following assumptions:
 - **TP errors** are interpolated over the recall of all predictions instead of over their confidence.
 - The number of predictions per sample is not limited.
 
+#### Configuration
+
+The evaluation is configured by the entries below (see [Configuration](#configuration)), e.g. in a parameter file passed via the `config` launch argument. All metrics are selected by default; a selected `detection_score` computes the AP and TP errors it combines, but only reports them if they are selected themselves.
+
+| Entry | Default | Description |
+| --- | --- | --- |
+| `metrics` | `[num_labels, num_predictions, ap, ate, ase, aoe, ave, detection_score]` | selected metrics, see the output metrics below |
+| `class_ranges.{class}` | `40.0`, `50.0` for `car`, `utility`, `bus` | maximum distance in meters from the origin of the label frame up to which objects of the class are evaluated |
+| `bike_rack_filtered_classes` | `[bicycle, motorcycle]` | classes removed inside the footprint of a bike rack |
+| `tp_metric_threshold` | `2.0` | match threshold in meters of the TP errors and the visualization |
+| `min_recall` | `0.1` | recall at or below which P-R points are excluded from the AP and TP errors are not averaged |
+| `ap.matching_thresholds` | `[0.5, 1.0, 2.0, 4.0]` | match thresholds in meters the AP is computed at |
+| `ap.min_precision` | `0.1` | precision at or below which P-R points are excluded from the AP |
+| `detection_score.map_weight` | `5.0` | weight of the mAP relative to each TP error in the detection score |
+| `max_sample_interval` | `1.0` | seconds between two consecutive samples beyond which they belong to different sequences |
+
+```yaml
+/**:
+  ros__parameters:
+    object_detection_3d:
+      metrics: [ap, ate]  # compute and report the average precision and the translation error only
+      ap:
+        matching_thresholds: [1.0, 2.0]
+```
+
 <details>
 <summary>Output metrics</summary>
 
-The results hold the `metrics` over all evaluated samples and, under `scenes`, the `num_samples`, `sample_ids` and `metrics` of each scene. Each metric holds its aggregated value under `_value_`, next to its sub-metrics per match threshold or per evaluated class `{class}`, e.g. `car` or `pedestrian|vru`.
+The results hold the `metrics` over all evaluated samples and, under `scenes`, the `num_samples`, `sample_ids` and `metrics` of each scene. Each metric holds its aggregated value under `_value_`, next to its sub-metrics per match threshold or per evaluated class `{class}`, e.g. `car` or `pedestrian|vru`. Only the selected metrics are reported.
 
 | Metric | Description |
 | - | - |
-| `_value_` | Detection score combining the mAP and the available mean TP errors with weights 5-1-1-1-1, normalised by the sum of the weights: `(5·mAP + Σ max(1−mTP,0)) / (5 + number of TP errors)`, `null` without labels. |
+| `_value_` | Detection score (see `detection_score`) while it is computed, `null` otherwise. |
 | `num_labels._value_` | Number of positive labels, i.e. without don't-care labels. |
 | `num_labels.{class}._value_` | Number of positive labels of the class, for every evaluated class with labels or predictions. A class with predictions but `0` labels has no AP and TP errors, so its predictions do not enter the metrics. |
 | `num_labels.{class}.{classes}` | Number of positive labels of the class by their possible classes `{classes}`, joined by `\|`, e.g. NVIDIA's persons as `pedestrian\|vru` and its strollers as `vru` within `pedestrian\|vru`. |
@@ -98,6 +123,7 @@ The results hold the `metrics` over all evaluated samples and, under `scenes`, t
 | `ase._value_`, `ase.{class}` | Average scale error as `1 - IoU` after aligning centers and orientation. |
 | `aoe._value_`, `aoe.{class}` | Average orientation error as smallest yaw angle difference between prediction and ground truth in radians. |
 | `ave._value_`, `ave.{class}` | Average velocity error as absolute velocity error in `m/s`, `null` for a class without labels with velocity and as mean if no label has a velocity. |
+| `detection_score._value_` | Detection score combining the mAP and the available mean TP errors with weights 5-1-1-1-1, normalised by the sum of the weights: `(5·mAP + Σ max(1−mTP,0)) / (5 + number of TP errors)`, `null` without labels. |
 
 The TP errors are measured with a maximum match distance of 2 meters; their means skip `null` classes.
 

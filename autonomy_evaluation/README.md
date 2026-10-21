@@ -23,7 +23,9 @@ Each evaluation is configured by parameters named `<evaluation>.<entry>`, e.g. `
 /**:
   ros__parameters:
     object_detection_3d:
-      max_sample_interval: 2.0  # samples further apart belong to different sequences
+      metrics: [ap, ate]  # compute and report the average precision and the translation error only
+      ap:
+        matching_thresholds: [1.0, 2.0]
 ```
 
 The messages of all topics that belong to the same sample are matched by their stamp and evaluated together. By default, only messages with exactly the same stamp are matched, as the dataset stamps all messages of a sample with its recording time and a system under test stamps its output with the stamp of the input it processed. Set `sync_tolerance` to match topics whose stamps differ, e.g. those a simulation publishes at slightly different times or at different rates. A message without a header, e.g. a `std_msgs/Bool`, is stamped with the time it is received at.

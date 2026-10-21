@@ -3,8 +3,9 @@
 
 """Tests for the ObjectDetection3D evaluation.
 
-Tests focus on public API methods: compute_sample_metrics(),
-compute_aggregated_metrics(), visualize_sample(), and evaluation configuration.
+Tests focus on public API methods: compute_sample_metrics(), which returns
+the records of the computed metrics by their names, compute_aggregated_metrics(),
+visualize_sample(), and the selection and configuration of the metrics.
 
 Inputs are real ROS messages (built via the helpers below), matching how
 ``_extract_objects`` reads them: geometry through the ``perception_msgs_utils``
@@ -24,7 +25,10 @@ from typing import List, Optional, Sequence, Tuple
 
 import pytest
 from autonomy_datasets_msgs.msg import ObjectListMetaInfo, ObjectMetaInfo
-from autonomy_evaluation.evaluations.object_detection.ObjectDetection3D import _class_types, ObjectDetection3D
+from autonomy_evaluation.evaluations.Metric import EVALUATED, Input, REFERENCE
+from autonomy_evaluation.evaluations.object_detection.DetectionMetrics import DetectionScore
+from autonomy_evaluation.evaluations.object_detection.matching import class_types
+from autonomy_evaluation.evaluations.object_detection.ObjectDetection3D import ObjectDetection3D
 from diagnostic_msgs.msg import KeyValue
 from geometry_msgs.msg import TransformStamped
 from perception_msgs.msg import HEXAMOTION, Object, ObjectClassification, ObjectList
@@ -196,11 +200,13 @@ class TestObjectDetection3D:
         label object list and, if the dataset publishes it, its meta info message.
         """
         label, label_meta_info = _label(gts)
-        return self.bm.compute_sample_metrics(_msg(pred_objs), label, label_meta_info=label_meta_info if meta_info else None)
+        return self.bm.compute_sample_metrics(
+            prediction=_msg(pred_objs), label=label, label_meta_info=label_meta_info if meta_info else None
+        )
 
     def _entries(self, pred_objs, gts, threshold: float = 2.0) -> list:
         """Return the true and false positives of a sample at a threshold."""
-        return self._metrics(pred_objs, gts)["match_records"][threshold]
+        return self._metrics(pred_objs, gts)["ap"][threshold]
 
     def _aggregate(self, *frames, scene_ids: Optional[Sequence[str]] = None) -> dict:
         """Record ``(pred_objs, gts)`` frames and aggregate them like the node does at the end."""
@@ -215,29 +221,29 @@ class TestObjectDetection3D:
     def _visualize(self, pred_objs, gts) -> dict:
         """Build the visualization object lists the way the node's callback does."""
         label, label_meta_info = _label(gts)
-        return self.bm.visualize_sample(_msg(pred_objs), label, label_meta_info=label_meta_info)
+        return self.bm.visualize_sample(prediction=_msg(pred_objs), label=label, label_meta_info=label_meta_info)
 
     # --- classes of an object ---
 
     def test_single_classification_is_the_class(self):
         """An object classified once has that class."""
-        assert _class_types([ObjectClassification(type=CAR, probability=0.4)]) == {CAR}
+        assert class_types([ObjectClassification(type=CAR, probability=0.4)]) == {CAR}
 
     def test_equally_probable_classifications_are_the_possible_classes(self):
         """A dataset that cannot tell the class assigns all possible ones with the same probability."""
         classifications = [ObjectClassification(type=class_type, probability=1.0) for class_type in WAYMO_VEHICLE]
 
-        assert _class_types(classifications) == set(WAYMO_VEHICLE)
+        assert class_types(classifications) == set(WAYMO_VEHICLE)
 
     def test_most_probable_classification_is_the_class(self):
         """Of a detection's class probabilities, only the highest one counts."""
         classifications = [ObjectClassification(type=CAR, probability=0.7), ObjectClassification(type=UTILITY, probability=0.3)]
 
-        assert _class_types(classifications) == {CAR}
+        assert class_types(classifications) == {CAR}
 
     def test_object_without_classification_is_unclassified(self):
         """An object without any classification may be of any class."""
-        assert _class_types([]) == {UNCLASSIFIED}
+        assert class_types([]) == {UNCLASSIFIED}
 
     @pytest.mark.parametrize(
         "deprecated, replacement",
@@ -253,11 +259,11 @@ class TestObjectDetection3D:
     )
     def test_deprecated_types_are_evaluated_as_their_replacement(self, deprecated, replacement):
         """Deprecated types are replaced as perception_msgs/ObjectClassification documents it."""
-        assert _class_types([ObjectClassification(type=deprecated, probability=1.0)]) == replacement
+        assert class_types([ObjectClassification(type=deprecated, probability=1.0)]) == replacement
 
     def test_undefined_type_is_evaluated_as_unknown(self):
         """A type the message does not define, e.g. Waymo's sign (20), is none of the defined classes."""
-        assert _class_types([ObjectClassification(type=20, probability=1.0)]) == {UNKNOWN}
+        assert class_types([ObjectClassification(type=20, probability=1.0)]) == {UNKNOWN}
 
     def test_deprecated_prediction_matches_its_replacement(self):
         """A detector publishing the deprecated TRAILER is evaluated as UTILITY."""
@@ -270,10 +276,10 @@ class TestObjectDetection3D:
     def test_empty_inputs(self):
         """Verify empty inputs produce valid match records for all thresholds."""
         result = self._metrics([], [])
-        assert result["sample_prediction_num"] == 0
-        assert result["sample_ground_truth_num"] == 0
+        assert result["objects"]["num_predictions"] == 0
+        assert result["objects"]["num_labels"] == 0
         for thr in [0.5, 1.0, 2.0, 4.0]:
-            assert result["match_records"][thr] == []
+            assert result["ap"][thr] == []
 
     def test_basic_matching_produces_tp(self):
         """Verify identical boxes produce true positives at tight threshold."""
@@ -324,9 +330,9 @@ class TestObjectDetection3D:
         result = self._metrics([_pred(x=0.0, confidence=0.9), _pred(x=0.5, confidence=0.8)], [_gt(classes=(UNCLASSIFIED,))])
 
         # the less confident prediction finds the object claimed and is a duplicate
-        assert [entry["confidence_score"] for entry in result["match_records"][2.0]] == [0.8]
-        assert result["sample_ground_truth_num"] == 0
-        assert result["sample_dont_care_num"] == 1
+        assert [entry["confidence_score"] for entry in result["ap"][2.0]] == [0.8]
+        assert result["objects"]["num_labels"] == 0
+        assert result["objects"]["num_dont_care"] == 1
 
     def test_label_that_may_be_unknown_is_dont_care(self):
         """The 'other_vehicle' of NVIDIA may be a motorcycle or none of the classes, but never a car."""
@@ -339,9 +345,9 @@ class TestObjectDetection3D:
         """A car predicted on a barrier, which is definitely none of the classes, is a false positive."""
         result = self._metrics([_pred(class_type=CAR)], [_gt(classes=(UNKNOWN,))])
 
-        assert result["match_records"][2.0][0]["is_tp"] is False
-        assert result["sample_ground_truth_num"] == 0
-        assert result["sample_dont_care_num"] == 0
+        assert result["ap"][2.0][0]["is_tp"] is False
+        assert result["objects"]["num_labels"] == 0
+        assert result["objects"]["num_dont_care"] == 0
 
     @pytest.mark.parametrize("classes", [(UNKNOWN,), (UNCLASSIFIED,), ()])
     def test_predictions_without_evaluated_class_are_dropped(self, classes):
@@ -349,7 +355,7 @@ class TestObjectDetection3D:
         prediction = _pred()
         prediction.state.classifications = [ObjectClassification(type=class_type, probability=0.9) for class_type in classes]
 
-        assert self._metrics([prediction], [])["sample_prediction_num"] == 0
+        assert self._metrics([prediction], [])["objects"]["num_predictions"] == 0
 
     def test_prediction_claims_the_nearest_label(self):
         """A prediction on a don't-care object does not steal the positive label of the next prediction."""
@@ -533,11 +539,12 @@ class TestObjectDetection3D:
         """Each metric reports its aggregate under '_value_', followed by its thresholds or classes."""
         metrics = self._aggregate(([_pred(x=0.0)], [_gt(x=0.0)]))
 
-        assert list(metrics) == ["_value_", "num_labels", "num_predictions", "ap", "ate", "ase", "aoe", "ave"]
+        assert list(metrics) == ["_value_", "num_labels", "num_predictions", "ap", "ate", "ase", "aoe", "ave", "detection_score"]
         assert list(metrics["ap"]) == ["_value_", "classes", "dist_0.5", "dist_1.0", "dist_2.0", "dist_4.0"]
         assert metrics["num_labels"] == {"_value_": 1, "car": {"_value_": 1, "car": 1}}
         assert metrics["ap"]["dist_0.5"] == {"_value_": 1.0, "classes": {"car": 1.0}}
         assert metrics["ate"] == {"_value_": 0.0, "car": 0.0}
+        assert metrics["detection_score"] == {"_value_": metrics["_value_"]}
 
     def test_reproduces_the_former_nuscenes_evaluation(self):
         """With labels of single classes, AP and TP errors equal those of the former NuscenesLidarObjectDetection.
@@ -565,24 +572,24 @@ class TestObjectDetection3D:
 
     def test_range_filtering_active(self):
         """Cars beyond 50 m are excluded from matching, those inside are kept."""
-        assert self._metrics([_pred(x=51.0)], [_gt(x=51.0)])["match_records"][2.0] == []
-        assert self._metrics([_pred(x=49.0)], [_gt(x=49.0)])["sample_ground_truth_num"] == 1
+        assert self._metrics([_pred(x=51.0)], [_gt(x=51.0)])["ap"][2.0] == []
+        assert self._metrics([_pred(x=49.0)], [_gt(x=49.0)])["objects"]["num_labels"] == 1
 
     def test_range_excludes_its_boundary(self):
         """An object exactly at the range of its class is excluded, as in nuScenes."""
         result = self._metrics([_pred(x=50.0)], [_gt(x=50.0)])
 
-        assert result["sample_prediction_num"] == 0
-        assert result["sample_ground_truth_num"] == 0
+        assert result["objects"]["num_predictions"] == 0
+        assert result["objects"]["num_labels"] == 0
 
     def test_label_of_several_classes_uses_their_largest_range(self):
         """A Waymo vehicle may be a car, so it is evaluated up to 50 m, a motorcycle only up to 40 m."""
-        assert self._metrics([], [_gt(x=45.0, classes=WAYMO_VEHICLE)])["sample_ground_truth_num"] == 1
-        assert self._metrics([], [_gt(x=45.0, classes=(MOTORCYCLE,))])["sample_ground_truth_num"] == 0
+        assert self._metrics([], [_gt(x=45.0, classes=WAYMO_VEHICLE)])["objects"]["num_labels"] == 1
+        assert self._metrics([], [_gt(x=45.0, classes=(MOTORCYCLE,))])["objects"]["num_labels"] == 0
 
     def test_unclassified_label_uses_the_largest_range(self):
         """An unclassified object may be a car, so it is don't-care up to 50 m."""
-        assert self._metrics([], [_gt(x=45.0, classes=(UNCLASSIFIED,))])["sample_dont_care_num"] == 1
+        assert self._metrics([], [_gt(x=45.0, classes=(UNCLASSIFIED,))])["objects"]["num_dont_care"] == 1
 
     def test_bike_rack_filters_bicycles_inside(self):
         """Bicycles inside a bike rack are excluded; the rack spans its length along its heading."""
@@ -594,8 +601,8 @@ class TestObjectDetection3D:
 
         result = self._metrics([_pred(x=10.0, y=2.4, class_type=BICYCLE)], [rack, inside, outside])
 
-        assert result["sample_prediction_num"] == 0
-        assert result["sample_ground_truth_num"] == 1
+        assert result["objects"]["num_predictions"] == 0
+        assert result["objects"]["num_labels"] == 1
 
     def test_bike_racks_need_the_label_meta_info(self):
         """Without meta information, e.g. on datasets that publish none, no bike rack is known."""
@@ -603,7 +610,7 @@ class TestObjectDetection3D:
 
         result = self._metrics([_pred(x=10.0, class_type=BICYCLE)], [rack, _gt(x=10.0, classes=(BICYCLE,))], meta_info=False)
 
-        assert result["match_records"][2.0][0]["is_tp"] is True
+        assert result["ap"][2.0][0]["is_tp"] is True
 
     def test_bike_rack_keeps_other_classes(self):
         """Only bicycles and motorcycles are filtered by bike racks."""
@@ -611,7 +618,7 @@ class TestObjectDetection3D:
 
         result = self._metrics([_pred(x=10.0, class_type=PEDESTRIAN)], [rack, _gt(x=10.0, classes=(PEDESTRIAN,))])
 
-        assert result["match_records"][2.0][0]["is_tp"] is True
+        assert result["ap"][2.0][0]["is_tp"] is True
 
     # --- TP metrics and score ---
 
@@ -640,31 +647,34 @@ class TestObjectDetection3D:
 
     def test_detection_score_with_all_tp_metrics(self):
         """With all TP metrics available, the detection score weights them like the NDS of nuScenes without AAE."""
-        score = self.bm._detection_score(0.5, {"ate": 0.2, "ase": 0.1, "aoe": 0.3, "ave": 0.4})
+        score = DetectionScore().score(0.5, {"ate": 0.2, "ase": 0.1, "aoe": 0.3, "ave": 0.4})
 
         assert score == pytest.approx((5.0 * 0.5 + 0.8 + 0.9 + 0.7 + 0.6) / 9.0)
 
     def test_detection_score_without_velocity(self):
         """Without AVE, the detection score is normalized over the remaining TP metrics."""
-        score = self.bm._detection_score(0.5, {"ate": 0.2, "ase": 0.1, "aoe": 0.3, "ave": None})
+        score = DetectionScore().score(0.5, {"ate": 0.2, "ase": 0.1, "aoe": 0.3, "ave": None})
 
         assert score == pytest.approx((5.0 * 0.5 + 0.8 + 0.9 + 0.7) / 8.0)
 
     def test_detection_score_clamps_tp_errors(self):
         """Verify TP errors above 1.0 are clamped in the detection score."""
-        assert self.bm._detection_score(0.0, {"ate": 2.0, "ase": 3.0, "aoe": 5.0, "ave": 1.5}) == 0.0
+        assert DetectionScore().score(0.0, {"ate": 2.0, "ase": 3.0, "aoe": 5.0, "ave": 1.5}) == 0.0
 
     # --- topics ---
 
-    def test_compares_the_predictions_with_the_labels_as_ground_truth(self):
+    def test_compares_the_predictions_with_the_labels_as_reference(self):
         """The prediction of the detector is evaluated against the labels, optionally with their meta information."""
-        assert self.bm.required_inputs() == {"prediction": ObjectList}
-        assert self.bm.required_ground_truth() == {"label": ObjectList}
-        assert self.bm.optional_ground_truth() == {"label_meta_info": ObjectListMetaInfo}
+        inputs = self.bm.inputs()
+
+        assert inputs["prediction"] == Input(ObjectList, EVALUATED)
+        assert inputs["label"] == Input(ObjectList, REFERENCE)
+        assert inputs["label_meta_info"].msg_type is ObjectListMetaInfo
+        assert inputs["label_meta_info"].optional
 
     def test_label_meta_info_follows_the_label_topic(self):
         """The dataset publishes the meta information next to the labels, on '<label topic>/meta_info'."""
-        assert self.bm.derived_topics() == {"label_meta_info": ("label", "/meta_info")}
+        assert self.bm.inputs()["label_meta_info"].next_to == ("label", "/meta_info")
 
     def test_sample_metrics_are_computed_from_the_messages_by_topic_name(self):
         """The node passes the messages of a sample by the names of their topics, without unpublished meta information."""
@@ -672,7 +682,7 @@ class TestObjectDetection3D:
 
         result = self.bm.record_sample(sample_id="0", prediction=_msg([_pred(x=0.0)]), label=label, label_meta_info=None)
 
-        assert result["metrics"]["sample_ground_truth_num"] == 1
+        assert result["metrics"]["objects"]["num_labels"] == 1
 
     def test_transforms_predictions_into_the_frame_of_the_labels(self):
         """Lidar-frame detections are compared with vehicle-frame labels after transforming them with tf2."""
@@ -680,9 +690,9 @@ class TestObjectDetection3D:
         # the lidar 1 m ahead of the vehicle origin faces to the left, so 10 m to its right are 11 m ahead of the origin
         label, _ = _label([_gt(x=11.0, yaw=math.pi / 2)], frame_id="base_link")
 
-        result = self.bm.compute_sample_metrics(_msg([_pred(y=-10.0, yaw=0.0)], frame_id="lidar_top"), label)
+        result = self.bm.compute_sample_metrics(prediction=_msg([_pred(y=-10.0, yaw=0.0)], frame_id="lidar_top"), label=label)
 
-        entry = result["match_records"][2.0][0]
+        entry = result["ap"][2.0][0]
         assert entry["is_tp"] is True
         assert entry["ate"] == pytest.approx(0.0, abs=1e-6)
         assert entry["aoe"] == pytest.approx(0.0, abs=1e-6)
@@ -694,15 +704,15 @@ class TestObjectDetection3D:
         label, _ = _label([_gt(x=0.0)], frame_id="base_link")
 
         with pytest.raises(ValueError, match="'lidar_top' cannot be transformed into frame 'base_link'"):
-            self.bm.compute_sample_metrics(_msg([_pred(x=0.0)], frame_id="lidar_top"), label)
+            self.bm.compute_sample_metrics(prediction=_msg([_pred(x=0.0)], frame_id="lidar_top"), label=label)
 
     def test_accepts_objects_without_frame(self):
         """An empty frame cannot be checked, so it is assumed to be the frame of the other object list."""
         label, _ = _label([_gt(x=0.0)], frame_id="base_link")
 
-        result = self.bm.compute_sample_metrics(_msg([_pred(x=0.0)], frame_id=""), label)
+        result = self.bm.compute_sample_metrics(prediction=_msg([_pred(x=0.0)], frame_id=""), label=label)
 
-        assert result["match_records"][2.0][0]["is_tp"] is True
+        assert result["ap"][2.0][0]["is_tp"] is True
 
     # --- visualization of the per-sample matching outcome ---
 
@@ -740,7 +750,7 @@ class TestObjectDetection3D:
         """The split reproduces what was scored at the TP metric threshold."""
         preds = [_pred(x=0.0, obj_id=100), _pred(x=15.0, obj_id=101), _pred(x=20.0, obj_id=102)]
         gts = [_gt(x=0.0), _gt(x=30.0), _gt(x=20.0, classes=(UNCLASSIFIED,))]
-        entries = self._entries(preds, gts, threshold=self.bm.tp_metric_threshold)
+        entries = self._entries(preds, gts, threshold=self.bm.config["tp_metric_threshold"])
         outputs = self._visualize(preds, gts)
         assert sum(entry["is_tp"] for entry in entries) == len(outputs["true_positives"].objects)
         assert sum(not entry["is_tp"] for entry in entries) == len(outputs["false_positives"].objects)
@@ -753,7 +763,7 @@ class TestObjectDetection3D:
         prediction.header.stamp.sec = 1
         label, label_meta_info = _label([_gt(x=30.0)])
         label.header.stamp.sec = 2
-        outputs = self.bm.visualize_sample(prediction, label, label_meta_info=label_meta_info)
+        outputs = self.bm.visualize_sample(prediction=prediction, label=label, label_meta_info=label_meta_info)
         assert outputs["true_positives"].header.stamp.sec == 1
         assert outputs["false_positives"].header.stamp.sec == 1
         assert outputs["false_negatives"].header.stamp.sec == 2
@@ -764,7 +774,9 @@ class TestObjectDetection3D:
         self.bm.tf_buffer = _lidar_tf_buffer(x=1.0, yaw=0.0)
         label, label_meta_info = _label([_gt(x=11.0)], frame_id="base_link")
 
-        outputs = self.bm.visualize_sample(_msg([_pred(x=10.0)], frame_id="lidar_top"), label, label_meta_info=label_meta_info)
+        outputs = self.bm.visualize_sample(
+            prediction=_msg([_pred(x=10.0)], frame_id="lidar_top"), label=label, label_meta_info=label_meta_info
+        )
 
         assert outputs["true_positives"].header.frame_id == "base_link"
         assert outputs["true_positives"].objects[0].state.continuous_state[HEXAMOTION.X] == pytest.approx(11.0)
@@ -777,6 +789,76 @@ class TestObjectDetection3D:
         ]
         outputs = self._visualize([_pred(x=1.0, class_type=UNKNOWN)], gts)
         assert all(output.objects == [] for output in outputs.values())
+
+    # --- selection and configuration of the metrics ---
+
+    def test_all_metrics_are_selected_by_default(self):
+        """The default configuration reports every metric, the internal counts of objects excluded."""
+        assert self.bm.config["metrics"] == ["num_labels", "num_predictions", "ap", "ate", "ase", "aoe", "ave", "detection_score"]
+
+    @staticmethod
+    def _record_golden_frames(evaluation: ObjectDetection3D) -> None:
+        """Record the golden frames, on which every metric has a non-trivial value."""
+        for labels, predictions in _golden_frames():
+            gts = [_gt(*values, classes=(class_type,)) for class_type, *values in labels]
+            preds = [
+                _pred(*values, class_type=class_type, confidence=confidence) for class_type, *values, confidence in predictions
+            ]
+            evaluation.record_sample(prediction=_msg(preds), label=_label(gts)[0])
+
+    def test_selected_metrics_report_the_values_of_the_full_evaluation(self):
+        """Selecting metrics changes which are reported, not their values."""
+        self._record_golden_frames(self.bm)
+        selected = ObjectDetection3D()
+        selected.configure({"metrics": ["ap", "ate"]})
+        self._record_golden_frames(selected)
+
+        full = self.bm.compute_aggregated_metrics(self.bm._sample_results)
+        metrics = selected.compute_aggregated_metrics(selected._sample_results)
+
+        assert metrics == {"_value_": None, "ap": full["ap"], "ate": full["ate"]}
+
+    def test_detection_score_alone_computes_the_metrics_it_combines(self):
+        """The detection score builds on the AP and the TP errors, which are computed but not reported."""
+        self.bm.configure({"metrics": ["detection_score"]})
+        self._record_golden_frames(self.bm)
+
+        metrics = self.bm.compute_aggregated_metrics(self.bm._sample_results)
+
+        assert list(self.bm.computed_metrics()) == ["objects", "ap", "ate", "ase", "aoe", "ave", "detection_score"]
+        assert list(metrics) == ["_value_", "detection_score"]
+        assert metrics["_value_"] == metrics["detection_score"]["_value_"] is not None
+
+    def test_matching_thresholds_are_configurable(self):
+        """The AP is computed at the configured thresholds only."""
+        self.bm.configure({"ap": {"matching_thresholds": [1.0, 3]}})
+
+        metrics = self._aggregate(([_pred(x=1.5)], [_gt(x=0.0)]))
+
+        assert list(metrics["ap"]) == ["_value_", "classes", "dist_1.0", "dist_3.0"]
+        assert metrics["ap"]["classes"] == {"car": 0.5}
+
+    def test_class_ranges_are_configurable(self):
+        """Objects of a class are evaluated up to its configured range."""
+        self.bm.configure({"class_ranges": {"car": 60.0}})
+
+        assert self._metrics([_pred(x=55.0)], [_gt(x=55.0)])["objects"]["num_labels"] == 1
+
+    def test_tp_metric_threshold_is_configurable(self):
+        """A prediction 3 m off its label is a true positive for the TP errors at a threshold of 4 m."""
+        self.bm.configure({"tp_metric_threshold": 4.0})
+
+        metrics = self._aggregate(([_pred(x=3.0)], [_gt(x=0.0)]))
+
+        assert metrics["ate"]["car"] == pytest.approx(3.0)
+
+    def test_map_weight_is_configurable(self):
+        """The detection score weights the mAP with the configured weight."""
+        self.bm.configure({"detection_score": {"map_weight": 1.0}})
+
+        metrics = self._aggregate(([_pred(x=0.0, vel_lon=5.0)], [_gt(x=0.0, vel_lon=3.0)]))
+
+        assert metrics["_value_"] == pytest.approx((1.0 * 1.0 + 3.0) / 5.0)
 
 
 # --- frames of single-class labels on which the former nuScenes evaluation was captured ---
