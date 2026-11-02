@@ -231,6 +231,71 @@ The results hold the `metrics` over all evaluated samples and, under `scenes`, t
 
 </details>
 
+### Trajectory Deviation
+
+Compares two trajectories of the ego vehicle, an evaluated and a reference trajectory, each read from a `perception_msgs/EgoData` input and taken from the source configured for it: `planned`, the `trajectory_planned` of each message, whose states are stamped with the times they are planned for, or `driven`, the states the input reports at the following samples of the same sequence. By the sources and the topics of both inputs, one evaluation answers several questions:
+
+| Question | `evaluated` | `evaluated_source` | `reference` | `reference_source` |
+| --- | --- | --- | --- | --- |
+| How well does the controller follow the plan? | ego data of the system under test | `driven` | same topic | `planned` |
+| How far does a planner deviate from a ground truth, e.g. a recorded human driver (open loop)? | ego data of the system under test | `planned` | ego data of the ground truth | `driven` |
+| How far do two planners deviate from each other? | ego data of the first planner | `planned` | ego data of the second planner | `planned` |
+
+| Topic | Type | Role | Description |
+| --- | --- | --- | --- |
+| `evaluated` | `perception_msgs/EgoData` | evaluated | ego vehicle whose trajectory is evaluated |
+| `reference` | `perception_msgs/EgoData` | reference | ego vehicle whose trajectory is the reference, not read by `consistency`; may be the same topic as `evaluated` |
+
+```bash
+# how well the controller follows the plan of a stack that publishes its planned trajectory with its ego data
+ros2 launch autonomy_evaluation autonomy_evaluation.launch.py \
+  evaluation:=trajectory_deviation \
+  evaluated:=/localization/ego_state_estimation/ego_data \
+  reference:=/localization/ego_state_estimation/ego_data \
+  config:=/config/controller.yml  # trajectory_deviation: {evaluated_source: driven, reference_source: planned}
+```
+
+Metrics are computed based on the following assumptions:
+
+- **Poses** are those of the geometric center, i.e. the position of a state moved by the `translation_to_geometric_center` of its reference point, the velocity is the longitudinal velocity of a state. A trajectory has velocities only if all its states set them.
+- **Planned trajectories** need at least two states with strictly increasing stamps; a trajectory whose states are not stamped is not compared. **Driven trajectories** run through the states of the samples of a sequence, so the last sample of a sequence has none.
+- **Frames**: all trajectories are compared in the frame of `reference`; an evaluated trajectory in another frame is transformed with the transform tf2 holds at the stamp of its message. Consecutive planned trajectories of `consistency` are taken to be in the same frame.
+- **Comparison**: at each sample, both trajectories are interpolated linearly every `time_step` from the stamp of the sample on, within the `horizon` and the time both cover. At each of these times, the evaluated pose deviates from the reference pose by its `displacement`, its `longitudinal` and `lateral` displacement along and across the heading of the reference, positive ahead and to the left, its `heading`, and its `velocity`, positive if faster. A metric is averaged over the compared times of a sample, and then over the compared samples, e.g. the average displacement error (ADE); the final displacement error (FDE) is the displacement at the last compared time of a sample.
+- **Consistency**: each planned trajectory of `evaluated` is compared with the one it planned at the previous sample of the sequence, likewise.
+
+#### Configuration
+
+| Entry | Default | Description |
+| --- | --- | --- |
+| `metrics` | `[displacement, longitudinal, lateral, heading, velocity, consistency]` | selected metrics |
+| `evaluated_source`, `reference_source` | `planned`, `driven` | whether the trajectory of each input is the `planned` or the `driven` one |
+| `horizon` | `5.0` | seconds after each sample over which the trajectories are compared |
+| `time_step` | `0.1` | seconds between the compared times |
+| `displacement.horizons` | `[1.0, 3.0]` | seconds after the sample at which the displacement is reported on its own |
+| `displacement.miss_threshold` | `2.0` | displacement in meters beyond which a sample misses the reference |
+| `max_sample_interval` | `1.0` | seconds between two consecutive samples beyond which they belong to different sequences |
+
+<details>
+<summary>Output metrics</summary>
+
+The top-level `_value_` is the average displacement error. A value that cannot be computed, e.g. without any compared sample, is `null`.
+
+| Metric | Description |
+| - | - |
+| `displacement._value_`, `displacement.final` | Average (ADE) and final (FDE) displacement error in meters. |
+| `displacement.max` | Largest displacement in meters. |
+| `displacement.at_{horizon}s` | Displacement at each of `horizons`, e.g. `at_1s`, averaged over the samples compared up to that time. |
+| `displacement.miss_rate` | Share of the compared samples whose largest displacement exceeds `miss_threshold`. |
+| `displacement.coverage` | Share of the samples that were compared. |
+| `{longitudinal,lateral}._value_`, `{longitudinal,lateral}.mean` | Mean absolute and mean signed displacement along and across the heading of the reference in meters. |
+| `{longitudinal,lateral}.max_abs`, `{longitudinal,lateral}.rms` | Largest absolute and root mean square displacement along and across the heading over all compared times. |
+| `heading._value_`, `heading.final`, `heading.max_abs` | Mean absolute heading deviation in radians, the same at the last compared time, and the largest. |
+| `velocity.{_value_,mean,max_abs,rms}` | Like `longitudinal`, of the velocity in `m/s`, over the samples at which both trajectories have velocities. |
+| `consistency._value_`, `consistency.max` | Mean and largest displacement between consecutive planned trajectories of `evaluated` in meters. |
+| `consistency.coverage` | Share of the pairs of consecutive samples that were compared. |
+
+</details>
+
 ### Adding more Evaluations
 
 An evaluation is composed of metrics, the building blocks of [Metric.py](../autonomy_evaluation/autonomy_evaluation/evaluations/Metric.py). Each metric declares the topics it reads, each by the name it is configured with, e.g. `prediction:=/topic`, its ROS message type and the role it plays:

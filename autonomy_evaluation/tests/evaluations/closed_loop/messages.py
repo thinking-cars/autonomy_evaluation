@@ -15,7 +15,7 @@ import math
 from typing import Optional, Sequence, Tuple
 
 from geometry_msgs.msg import TransformStamped
-from perception_msgs.msg import EGO, EgoData, HEXAMOTION, Object, ObjectList
+from perception_msgs.msg import EGO, EgoData, HEXAMOTION, Object, ObjectList, ObjectState
 from perception_msgs_utils import initialize_state, set_continuous_state_covariance_to_unknown_at
 from tf2_ros import Buffer
 
@@ -53,9 +53,10 @@ def ego_data(
     stamp: float = 0.0,
     frame_id: str = "map",
     translation_to_geometric_center: Tuple[float, float] = (0.0, 0.0),
+    trajectory_planned: Sequence[ObjectState] = (),
 ) -> EgoData:
     """Build the ``EgoData`` of an ego vehicle, its position given at its reference point."""
-    message = EgoData(length=length, width=width)
+    message = EgoData(length=length, width=width, trajectory_planned=list(trajectory_planned))
     initialize_state(message, EGO.MODEL_ID)
     _set(
         message.state,
@@ -73,6 +74,16 @@ def ego_data(
     message.state.reference_point.translation_to_geometric_center.x = translation_to_geometric_center[0]
     message.state.reference_point.translation_to_geometric_center.y = translation_to_geometric_center[1]
     return _stamped(message, stamp, frame_id)
+
+
+def planned_state(
+    stamp: float, x: float, y: float = 0.0, yaw: float = 0.0, vel_lon: Optional[float] = None, frame_id: str = "map"
+) -> ObjectState:
+    """Build a state of a planned trajectory of the ego vehicle, stamped with the time it is planned for."""
+    state = ObjectState()
+    initialize_state(state, EGO.MODEL_ID)
+    _set(state, [(EGO.X, x), (EGO.Y, y), (EGO.YAW, yaw), (EGO.VEL_LON, vel_lon)])
+    return _stamped(state, stamp, frame_id)
 
 
 def road_user(

@@ -17,6 +17,7 @@ The node runs the evaluation selected by `evaluation`, either one of this packag
 | --- | --- | --- | --- |
 | `object_detection_3d` | `prediction` (`perception_msgs/ObjectList`) | `label` (`perception_msgs/ObjectList`); optionally `label_meta_info` (`autonomy_datasets_msgs/ObjectListMetaInfo`, subscribed next to `label` on `<label topic>/meta_info`) | - |
 | `closed_loop` | `ego_data` (`perception_msgs/EgoData`) | - | `objects` (`perception_msgs/ObjectList`), read by the `criticality` metrics only; optionally the Lanelet2 `map` of the current scene from the parameters of the `map_server`, needed by the `rule_compliance` metrics |
+| `trajectory_deviation` | `evaluated` (`perception_msgs/EgoData`), its planned or driven trajectory | `reference` (`perception_msgs/EgoData`), its planned or driven trajectory; both may be the same topic, e.g. to compare the driven with the planned trajectory | - |
 
 A metric may also use the Lanelet2 map of the current scene, e.g. to find the lane the ego vehicle drives in. The node reads the map from the parameters `map_contents`, `origin_lat`, `origin_lon` and `map_frame_id` of the node set as `map_server`, as [lanelet2_map_server](https://github.com/openads-project/lanelet2_map_server) and [autonomy_datasets](https://github.com/thinking-cars/autonomy_datasets) (`/datasets`) provide them, and loads it anew whenever they change, e.g. with each scene of a dataset.
 

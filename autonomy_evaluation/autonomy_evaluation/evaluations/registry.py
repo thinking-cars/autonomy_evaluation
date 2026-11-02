@@ -28,6 +28,10 @@ EVALUATIONS: Dict[str, Tuple[str, str]] = {
         "autonomy_evaluation.evaluations.closed_loop.ClosedLoop",
         "ClosedLoop",
     ),
+    "trajectory_deviation": (
+        "autonomy_evaluation.evaluations.trajectory_deviation.TrajectoryDeviation",
+        "TrajectoryDeviation",
+    ),
 }
 
 
