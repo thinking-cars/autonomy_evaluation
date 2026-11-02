@@ -111,13 +111,19 @@ def launch_node(context: LaunchContext, remappings: list) -> list[Node]:
 def generate_launch_description():
     """Create and return the launch description for the autonomy_evaluation node."""
 
-    # Service of the dataset node the evaluation requests the samples to evaluate from, remapped
-    # onto the topic its argument resolves to just like the evaluation's data inputs.
+    # Service of the dataset node the evaluation requests the samples to evaluate from, and service
+    # finishing the evaluation, remapped onto the names their arguments resolve to just like the
+    # evaluation's data inputs.
     remappable_topics = [
         DeclareLaunchArgument(
             "request_samples",
             default_value="~/request_samples",
             description="service of the dataset node used to request the samples to evaluate",
+        ),
+        DeclareLaunchArgument(
+            "finish",
+            default_value="~/finish",
+            description="service finishing the evaluation, e.g. called by a closed-loop simulation at the end of its scenario",
         ),
     ]
 

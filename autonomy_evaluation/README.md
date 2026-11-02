@@ -77,12 +77,12 @@ ros2 launch autonomy_evaluation autonomy_evaluation.launch.py \
 ```mermaid
 flowchart LR
     NODE("autonomy_evaluation")
+    SS0:::hidden o--o|~/finish| NODE
     NODE o--o|~/request_samples| SC0:::hidden
-    SV0:::hidden o--o|~/finish| NODE
     classDef hidden display: none;
 ```
 
-#### Services
+#### Service Servers
 
 | Service | Type | Description |
 | --- | --- | --- |
@@ -107,7 +107,6 @@ flowchart LR
 | `evaluation_timeout` | `float` | `60.0` | seconds to wait for a published sample to be evaluated before continuing without it |
 | `results_path` | `string` | - | path of the JSON file the evaluation results are written to; results are only logged if empty |
 | `map_server` | `string` | - | node providing the Lanelet2 map of the current scene by its parameters 'map_contents', 'origin_lat', 'origin_lon' and 'map_frame_id', e.g. '/datasets' of autonomy_datasets or '/lanelet2_map_server'; evaluated without map if empty |
-| `<evaluation>.<entry>` | various | see evaluation | configuration of the evaluation, e.g. `object_detection_3d.metrics` selecting the metrics it computes; read-only |
 
 ## Launch Files
 
@@ -116,6 +115,7 @@ flowchart LR
 | Argument | Default | Description |
 | --- | --- | --- |
 | `request_samples` | `"~/request_samples"` | service of the dataset node used to request the samples to evaluate |
+| `finish` | `"~/finish"` | service finishing the evaluation, e.g. called by a closed-loop simulation at the end of its scenario |
 | `evaluation` | `"object_detection_3d"` | evaluation to run |
 | `config` | `""` | path of a ROS parameter file configuring the evaluation by parameters named `<evaluation>.<entry>` (default configuration if empty) |
 | `name` | `"autonomy_evaluation"` | node name |

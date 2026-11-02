@@ -8,15 +8,18 @@ services:
       NAME: autonomy_evaluation
       # --- other -----
       REQUEST_SAMPLES: ~/request_samples
+      FINISH: ~/finish
       LOG_LEVEL: ${LOG_LEVEL:-info}
       USE_SIM_TIME: ${USE_SIM_TIME:-true}
       EVALUATION: object_detection_3d
+      CONFIG: ""
       VISUALIZE: false
       SAMPLE_SOURCE: dataset
       SYNC_TOLERANCE: 0.0
       SAMPLES_PER_REQUEST: 1
       SAMPLE_IDS: ""
       EVALUATION_TIMEOUT: 60.0
+      MAP_SERVER: ""
       RESULTS_PATH: ""
     command:
       - /bin/bash
@@ -28,11 +31,14 @@ services:
           log_level:=$${LOG_LEVEL} \
           use_sim_time:=$${USE_SIM_TIME} \
           evaluation:=$${EVALUATION} \
+          $${CONFIG:+config:=$${CONFIG}} \
           visualize:=$${VISUALIZE} \
           sample_source:=$${SAMPLE_SOURCE} \
           sync_tolerance:=$${SYNC_TOLERANCE} \
           samples_per_request:=$${SAMPLES_PER_REQUEST} \
           $${SAMPLE_IDS:+sample_ids:=$${SAMPLE_IDS}} \
           evaluation_timeout:=$${EVALUATION_TIMEOUT} \
+          $${MAP_SERVER:+map_server:=$${MAP_SERVER}} \
           $${RESULTS_PATH:+results_path:=$${RESULTS_PATH}} \
-          request_samples:=$${REQUEST_SAMPLES}
+          request_samples:=$${REQUEST_SAMPLES} \
+          finish:=$${FINISH}
