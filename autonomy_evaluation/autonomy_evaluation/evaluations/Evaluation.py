@@ -36,6 +36,7 @@ import os
 from abc import ABC
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
+from autonomy_evaluation.evaluations.limits import check_limits, Limit, parse_limits
 from autonomy_evaluation.evaluations.Metric import (
     Aggregation,
     EVALUATED,
@@ -52,7 +53,12 @@ from tf2_ros import BufferInterface
 _BASE_CONFIG: Dict[str, Any] = {
     # seconds between two consecutive samples beyond which they belong to different sequences (see sampling.py)
     "max_sample_interval": 1.0,
+    # optional limits judging the metrics as passed or failed, none by default (see limits.py)
+    "limits": [],
 }
+
+#: Configuration key of the limits on the metrics.
+_LIMITS_KEY = "limits"
 
 #: Configuration key selecting the computed metrics.
 _METRICS_KEY = "metrics"
@@ -116,6 +122,7 @@ class Evaluation(ABC):
         self._config: Optional[Dict[str, Any]] = None
         self._selected: List[str] = []
         self._computed: List[str] = []
+        self._limits: List[Limit] = []
         # Last recorded sample, whose derived data the visualization of the same sample reuses
         self._last_sample: Optional[Sample] = None
 
@@ -210,6 +217,9 @@ class Evaluation(ABC):
 
         * ``max_sample_interval``: seconds between two consecutive samples
           beyond which they belong to different sequences (default ``1.0``),
+        * ``limits``: optional limits judging the metrics as passed or
+          failed, see :mod:`~autonomy_evaluation.evaluations.limits` (none by
+          default),
         * the evaluation-level entries of :meth:`default_config`,
         * ``metrics``: the selected metrics, each by the name of a metric, of
           a group of metrics or of a metric of a group as ``<group>.<metric>``;
@@ -281,8 +291,25 @@ class Evaluation(ABC):
                 section = effective.get(group, {}) if group else effective
                 metric.config = copy.deepcopy(section[key]) if metric.default_config() else {}
             self._selected, self._computed = selected, computed
+        self._limits = self._parsed_limits(effective[_LIMITS_KEY])
         self._config = effective
         return effective
+
+    def _parsed_limits(self, texts: List[str]) -> List[Limit]:
+        """Read the configured limits, each of which must name a value of a selected metric or the headline value."""
+        try:
+            limits = parse_limits(texts)
+        except ValueError as exception:
+            raise ValueError(f"Evaluation '{self.name}': {exception}") from exception
+        if self.available_metrics():
+            for limit in limits:
+                names = ["_value_", *self._selected]
+                if not any(limit.metric == name or limit.metric.startswith(f"{name}{CONFIG_SEPARATOR}") for name in names):
+                    raise ValueError(
+                        f"Evaluation '{self.name}' cannot check limit '{limit.text}', as it names none of the selected "
+                        f"metrics {self._selected}"
+                    )
+        return limits
 
     def _top_level_names(self) -> List[str]:
         """Return the names of the groups and of the selectable metrics outside of groups, in the order of :meth:`metrics`."""
@@ -683,7 +710,9 @@ class Evaluation(ABC):
         the samples were evaluated (``sampling``, see
         :func:`~autonomy_evaluation.evaluations.sampling.sampling_statistics`),
         the topics that were read (``inputs``) and the configuration the
-        metrics were computed with (``config``).
+        metrics were computed with (``config``). Only if limits are configured,
+        the results and each scene hold whether their metrics pass them
+        (``limits``, see :func:`~autonomy_evaluation.evaluations.limits.check_limits`).
 
         Parameters
         ----------
@@ -696,7 +725,7 @@ class Evaluation(ABC):
         max_sample_interval = self.config["max_sample_interval"]
         aggregated = self.compute_aggregated_metrics(self._sample_results)
         scenes = self.sample_results_by_scene()
-        return {
+        results = {
             "evaluation": self.name,
             "version": self.version,
             "description": self.description,
@@ -725,6 +754,12 @@ class Evaluation(ABC):
                 for scene_id, entries in scenes.items()
             },
         }
+        # the results only hold a verdict if limits are configured
+        if self._limits:
+            results["limits"] = check_limits(self._limits, aggregated)
+            for scene in results["scenes"].values():
+                scene["limits"] = check_limits(self._limits, scene["metrics"])
+        return results
 
     def save_results(self, output_path: str, results: Optional[Dict[str, Any]] = None, complete: bool = True) -> str:
         """Finalize and write results to a JSON file.

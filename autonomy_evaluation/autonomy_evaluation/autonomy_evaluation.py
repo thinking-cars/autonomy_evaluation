@@ -869,6 +869,19 @@ class AutonomyEvaluation(Node):
                 "its results are marked as incomplete."
             )
 
+        # limits are optional, and only judged if configured
+        if "limits" in results:
+            verdict = results["limits"]
+            outcome = {True: "passed", False: "failed", None: "left undecided"}[verdict["passed"]]
+            summary = (
+                f"Evaluation '{self.evaluation}' {outcome} its limits: {verdict['num_passed']} of "
+                f"{len(verdict['checks'])} limit(s) passed, {verdict['num_failed']} failed"
+            )
+            if verdict["passed"]:
+                self.get_logger().info(summary)
+            else:
+                self.get_logger().warn(summary)
+
         if self.results_path:
             reported_results = "evaluation results" if complete else "incomplete evaluation results"
             try:

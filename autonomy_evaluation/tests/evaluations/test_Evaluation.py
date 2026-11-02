@@ -701,6 +701,7 @@ class TestConfiguration:
         """The configuration selects all metrics and holds the entries of each, nested under its group."""
         assert _ComposedEvaluation().config_defaults() == {
             "max_sample_interval": 1.0,
+            "limits": [],
             "unit": "m",
             "metrics": ["num_objects", "proximity", "objects_per_sample", "speed"],
             "proximity": {"closest": {"scale": 1.0}},
@@ -747,7 +748,7 @@ class TestConfiguration:
 
     def test_evaluation_without_building_blocks_is_configured_too(self):
         """An evaluation computing its metrics itself has the configuration every evaluation has."""
-        assert CountingEvaluation().config == {"max_sample_interval": 1.0}
+        assert CountingEvaluation().config == {"max_sample_interval": 1.0, "limits": []}
 
     def test_flattened_configuration_names_nested_entries_by_their_joined_keys(self):
         """ROS parameters name nested entries by their keys joined with '.', lists are values."""
@@ -791,3 +792,46 @@ class TestResultsDescription:
             "prediction": "evaluated",
             "label": "reference",
         }
+
+
+class TestLimits:
+    """Tests judging the metrics of an evaluation and of each scene by optional limits."""
+
+    def test_results_hold_no_verdict_without_limits(self):
+        """Limits are optional, without them the results are the same as before."""
+        results = _record(_ComposedEvaluation(), _SAMPLES).finalize()
+
+        assert "limits" not in results
+        assert all("limits" not in scene for scene in results["scenes"].values())
+
+    def test_limits_are_checked_on_all_samples_and_on_each_scene(self):
+        """Scene 'a' has three objects and passes, scene 'b' has two objects and fails, all samples have five."""
+        evaluation = _ComposedEvaluation()
+        evaluation.configure({"limits": ["num_objects >= 3"]})
+
+        results = _record(evaluation, _SAMPLES).finalize()
+
+        assert results["limits"]["passed"] is True
+        assert results["limits"]["checks"] == [{"limit": "num_objects >= 3", "value": 5.0, "passed": True}]
+        assert results["scenes"]["a"]["limits"]["passed"] is True
+        assert results["scenes"]["b"]["limits"]["passed"] is False
+
+    def test_limits_may_judge_the_headline_value(self):
+        """The headline value of the evaluation is its '_value_'."""
+        evaluation = _ComposedEvaluation()
+        evaluation.configure({"limits": ["_value_ < 5"]})
+
+        assert _record(evaluation, _SAMPLES).finalize()["limits"]["passed"] is False
+
+    @pytest.mark.parametrize(
+        "limits, error",
+        [
+            (["num_objects >> 3"], "is not of the form"),
+            (["speed < 2"], "names none of the selected metrics"),  # not selected below
+            (["unknown.metric < 2"], "names none of the selected metrics"),
+        ],
+    )
+    def test_rejects_limits_it_cannot_check(self, limits, error):
+        """A malformed limit, or one on a metric that is not computed, is rejected when configuring."""
+        with pytest.raises(ValueError, match=error):
+            _ComposedEvaluation().configure({"metrics": ["num_objects"], "limits": limits})

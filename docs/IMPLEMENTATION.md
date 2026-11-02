@@ -298,11 +298,35 @@ An evaluation without metric building blocks, e.g. one implemented before they e
 Each evaluation is configured by nested entries with default values, which hold
 
 - `max_sample_interval`: seconds between two consecutive samples beyond which they belong to different sequences (default `1.0`),
+- `limits`: optional limits judging the metrics as passed or failed (none by default, see [Limits](#limits)),
 - the entries the evaluation shares among all its metrics,
 - `metrics`: the selected metrics, each by the name of a metric, of a group of metrics, or of a metric of a group as `<group>.<metric>`; all metrics by default,
 - the configuration of each metric under its name, nested under the name of its group.
 
 A metric that a selected metric requires is computed as well, but only reported if it is selected itself. The results hold the configuration the metrics were computed with under `config`, next to the topics that were read and their roles under `inputs`.
+
+#### Limits
+
+Metrics only measure, e.g. the smallest time to collision of the ego vehicle; whether a value is acceptable depends on the application. Every evaluation therefore takes optional limits on its metrics in its `limits` entry, one string `"<metric> <operator> <bound>"` per limit: `<metric>` is the path of a value in the aggregated metrics with its keys joined by `.`, where the path to a metric with sub-metrics means its `_value_`, the operator one of `<`, `<=`, `>`, `>=`, `==`, and the bound a number. A limit must name a value of a selected metric, or the headline value `_value_`.
+
+```yaml
+/**:
+  ros__parameters:
+    closed_loop:
+      limits: ["criticality.collision.at_fault == 0", "criticality.ttc >= 1.5", "rule_compliance.speed_limit.max_excess <= 1.0"]
+    object_detection_3d:
+      limits: ["detection_score >= 0.5", "ap.dist_2.0 >= 0.6"]
+```
+
+Without limits, which is the default, the results hold no verdict and are the same as without this entry. With limits, the results and each scene under `scenes` hold `limits` next to their `metrics`:
+
+| Field | Description |
+| --- | --- |
+| `passed` | `true` if every limit passes, `false` if any limit fails, `null` if none fails but some cannot be checked. |
+| `num_passed`, `num_failed` | Number of limits that pass and that fail. |
+| `checks` | Per limit, as configured under `limit`, the `value` of its metric and whether it `passed`, `null` if the value is `null`, e.g. the smallest time to collision while no road user was ever on collision course, or if the path leads to no number, which `error` then explains. |
+
+The node logs whether the metrics over all samples passed their limits once the evaluation has finished.
 
 #### Sequences of samples
 

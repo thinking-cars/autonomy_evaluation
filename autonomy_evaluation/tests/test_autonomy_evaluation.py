@@ -569,6 +569,7 @@ class TestConfigureEvaluation:
             "configurable.distance.thresholds",
             "configurable.dynamics.speed.scale",
             "configurable.dynamics.speed.thresholds",
+            "configurable.limits",
             "configurable.max_sample_interval",
             "configurable.metrics",
         ]
@@ -799,6 +800,17 @@ class TestFinalizeEvaluation:
         AutonomyEvaluation.finalize_evaluation(node, complete=False)
 
         assert node.evaluation_handler.written_results is None
+
+    def test_logs_whether_the_metrics_passed_their_limits(self):
+        """With limits configured, the verdict over all samples is logged."""
+        node = _node()
+        verdict = {"passed": False, "num_passed": 1, "num_failed": 1, "checks": [{}, {}]}
+        finalize = node.evaluation_handler.finalize
+        node.evaluation_handler.finalize = lambda complete=True: {**finalize(complete), "limits": verdict}
+
+        AutonomyEvaluation.finalize_evaluation(node)
+
+        assert "Evaluation 'counting' failed its limits: 1 of 2 limit(s) passed, 1 failed" in node.get_logger().messages
 
     def test_results_are_only_logged_without_a_results_path(self):
         """Without 'results_path' the interrupted results are logged instead of written."""
