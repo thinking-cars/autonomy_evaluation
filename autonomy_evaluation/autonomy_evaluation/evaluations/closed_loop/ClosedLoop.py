@@ -16,8 +16,8 @@ the run ends when its publisher calls the ``~/finish`` service of the node.
 
 Metrics, grouped and selectable via ``metrics``:
 
-- ``criticality``: ``collision``, ``ttc`` and ``thw`` of the ego vehicle
-  towards the other road users
+- ``criticality``: ``collision``, ``ttc``, ``thw`` and ``pet`` of the ego
+  vehicle towards the other road users
   (:mod:`~autonomy_evaluation.evaluations.closed_loop.CriticalityMetrics`).
 - ``comfort``: ``acceleration``, ``jerk`` and ``yaw_rate`` of the ego vehicle
   (:mod:`~autonomy_evaluation.evaluations.closed_loop.ComfortMetrics`).
@@ -31,7 +31,12 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from autonomy_evaluation.evaluations.closed_loop.ComfortMetrics import Acceleration, EgoMotion, Jerk, YawRate
-from autonomy_evaluation.evaluations.closed_loop.CriticalityMetrics import Collision, TimeHeadway, TimeToCollision
+from autonomy_evaluation.evaluations.closed_loop.CriticalityMetrics import (
+    Collision,
+    PostEncroachmentTime,
+    TimeHeadway,
+    TimeToCollision,
+)
 from autonomy_evaluation.evaluations.Evaluation import Evaluation
 from autonomy_evaluation.evaluations.Metric import MetricGroup
 
@@ -59,7 +64,7 @@ class ClosedLoop(Evaluation):
         """Compose the evaluation of the criticality and the comfort metrics."""
         return [
             EgoMotion(),
-            MetricGroup("criticality", [Collision(), TimeToCollision(), TimeHeadway()]),
+            MetricGroup("criticality", [Collision(), TimeToCollision(), TimeHeadway(), PostEncroachmentTime()]),
             MetricGroup("comfort", [Acceleration(), Jerk(), YawRate()]),
         ]
 

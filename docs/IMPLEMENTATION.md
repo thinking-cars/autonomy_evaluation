@@ -132,7 +132,7 @@ The TP errors are measured with a maximum match distance of 2 meters; their mean
 
 ### Closed-Loop
 
-Evaluates the ego vehicle a system under test drives, e.g. a planner in a closed-loop simulation, by its behavior over the whole run: its criticality towards the other road users, i.e. how close it comes to colliding with them or does, and its comfort, i.e. how smoothly it drives. The criticality metrics follow the definitions of the review of [Westhofen et al. (2023), Criticality Metrics for Automated Driving](https://doi.org/10.1007/s11831-022-09788-7), the classification of collisions follows [nuPlan](https://nuplan-devkit.readthedocs.io/en/latest/metrics_description.html).
+Evaluates the ego vehicle a system under test drives, e.g. a planner in a closed-loop simulation, by its behavior over the whole run: its criticality towards the other road users, i.e. how close it comes to colliding with them or does, and its comfort, i.e. how smoothly it drives. The criticality metrics follow the definitions of the review of [Westhofen et al. (2023), Criticality Metrics for Automated Driving](https://doi.org/10.1007/s11831-022-09788-7), the classification of collisions follows [nuPlan](https://nuplan-devkit.readthedocs.io/en/latest/metrics_description.html), the classification of encounters the conflict types of the [Surrogate Safety Assessment Model (SSAM)](https://www.fhwa.dot.gov/publications/research/safety/08051/).
 
 | Topic | Type | Role | Description |
 | --- | --- | --- | --- |
@@ -151,6 +151,7 @@ Metrics are computed based on the following assumptions:
 - **Collisions**: the ego vehicle collides with a road user while their footprints overlap; an overlap over consecutive samples is one collision. Each collision is classified at its first sample like the collision types of nuPlan: `stopped_ego` if the ego vehicle stands still (not at fault), else `stopped_object` if the other road user stands still (at fault), else by the side of the ego vehicle closest to the overlap: `active_front` (at fault), `active_rear` (not at fault) or `active_lateral`. Whether the ego vehicle is at fault for a lateral collision depends on which road user left its lane, so it stays undetermined without the lanes.
 - **Time to collision** (TTC): both the ego vehicle and every road user keep their velocity and yaw; the TTC to a road user is the time until their footprints overlap, stepped through the horizon at `time_step` and refined by bisection. The TTC of the ego vehicle at a sample is the smallest TTC to any road user within the horizon. The time exposed (TET) and the time integrated (TIT) follow [Minderhoud and Bovy (2001)](https://doi.org/10.1016/S0001-4575(00)00019-1) for the ego vehicle: TET is the time its TTC stays below `exposure_threshold` (TTC*), TIT integrates `TTC* − TTC` over that time. Each sample counts for the sampling period of its sequence. `exposure_threshold` is a parameter of these metrics, not a limit the ego vehicle passes or fails.
 - **Time headway** (THW): the road user the ego vehicle follows is the closest one ahead whose geometric center lies within `corridor_width` around the path ahead of the ego vehicle, which continues its current yaw rate as a circle, or straight if its yaw rate is not set. The THW is the gap along the path from the front of the ego vehicle to the rear of that road user, zero if they overlap, divided by the longitudinal velocity of the ego vehicle, which must be at least `min_speed`. Without lanes, the corridor is a heuristic: in a bend whose curvature changes, a road user in the neighboring lane may be followed.
+- **Post-encroachment time** (PET): the trajectories of the ego vehicle and of each road user over a sequence of samples, resampled at `time_step`, are rasterized into the cells of a ground grid of `cell_size`; a cell is occupied while its center lies within a footprint. For every cell both pass, the PET is the time between the first road user leaving the cell and the second one entering it, zero if both occupy it at the same time. The PET of an encounter is the smallest PET over the cells, and a road user encounters the ego vehicle if it is at most `max_pet`, at most once per sequence. Entering and leaving a cell are estimated to within half the time step, so the PET is resolved to within `time_step`. Encounters are classified by the angle between the headings of both road users at the cell of their PET, like the conflict types of SSAM: `rear_end` below 30°, e.g. following a road user, `lane_change` up to 85°, and `crossing` beyond, which includes oncoming road users. Following a road user is therefore an encounter of type `rear_end` whose PET is the time gap.
 
 #### Configuration
 
@@ -164,6 +165,9 @@ Metrics are computed based on the following assumptions:
 | `criticality.ttc.exposure_threshold` | `3.0` | TTC* in seconds below which the ego vehicle is exposed for TET and TIT |
 | `criticality.thw.corridor_width` | `3.5` | width in meters of the corridor along the path ahead of the ego vehicle |
 | `criticality.thw.min_speed` | `0.5` | speed in `m/s` of the ego vehicle below which it has no time headway |
+| `criticality.pet.cell_size` | `0.5` | edge length in meters of the cells of the ground grid |
+| `criticality.pet.time_step` | `0.1` | seconds between the resampled poses of the trajectories, the resolution of the PET |
+| `criticality.pet.max_pet` | `10.0` | PET in seconds up to which a road user encounters the ego vehicle |
 | `max_sample_interval` | `1.0` | seconds between two consecutive samples beyond which they belong to different sequences |
 
 ```yaml
@@ -194,6 +198,10 @@ The results hold the `metrics` over all evaluated samples and, under `scenes`, t
 | `criticality.ttc.time_integrated` | Time integrated (TIT) in `s²`: `TTC* − TTC` integrated over the time exposed. |
 | `criticality.thw._value_`, `criticality.thw.mean` | Smallest and mean time headway of the ego vehicle in seconds over the samples in which it follows a road user. |
 | `criticality.thw.share` | Share of the samples in which the ego vehicle follows a road user. |
+| `criticality.pet._value_` | Smallest post-encroachment time of all encounters in seconds, `null` without encounter. |
+| `criticality.pet.num_encounters` | Number of encounters, i.e. road users passing a spot of the ego vehicle within `max_pet`. |
+| `criticality.pet.ego_first` | Number of encounters in which the ego vehicle passed the spot first. |
+| `criticality.pet.types.{type}._value_`, `criticality.pet.types.{type}.num_encounters` | Smallest PET and number of encounters per conflict type: `rear_end`, `lane_change`, `crossing`. |
 | `comfort.acceleration._value_` | Largest magnitude of the acceleration of the ego vehicle in `m/s²`. |
 | `comfort.acceleration.longitudinal.{max,min,rms}` | Strongest longitudinal acceleration, strongest deceleration (negative) and root mean square of the longitudinal acceleration in `m/s²`. |
 | `comfort.acceleration.lateral.{max_abs,rms}` | Largest absolute and root mean square lateral acceleration in `m/s²`. |

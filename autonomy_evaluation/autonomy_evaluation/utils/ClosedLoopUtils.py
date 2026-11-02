@@ -304,7 +304,11 @@ class ClosedLoopUtils:
         The trajectory is resampled at ``time_step``, so that a fast road user
         sampled at a low rate does not jump over cells. A cell is occupied while
         its center lies within the footprint of the road user. Consecutive
-        occupancies of a cell form one interval.
+        occupancies of a cell form one interval, which is extended by half a time
+        step on either side: the road user actually enters a cell some time
+        between the last resampled pose outside and the first one inside, so
+        that the extended interval estimates its entry and exit without bias, to
+        within half a time step.
 
         Args:
             times: Strictly increasing sample times of the trajectory in seconds.
@@ -317,8 +321,8 @@ class ClosedLoopUtils:
         Returns:
             ``{"cell", "start", "end", "yaw"}``, arrays of one entry per interval:
             the cell as ``(column, row)`` index pair of shape ``(n, 2)``, the
-            first and last time the cell is occupied in the interval, and the
-            yaw of the road user at the start of the interval.
+            estimated times the road user enters and leaves the cell, and its
+            yaw at the first pose inside the cell.
         """
         times, x, y, yaw = ClosedLoopUtils.resample_poses(times, x, y, yaw, time_step)
         # cells whose center may lie within the footprint, relative to the cell of the center of the road user
@@ -346,8 +350,8 @@ class ClosedLoopUtils:
         ends = np.concatenate([starts[1:], [pose.size]]) - 1
         return {
             "cell": np.stack([cell_columns[starts], cell_rows[starts]], axis=1),
-            "start": times[pose[starts]],
-            "end": times[pose[ends]],
+            "start": times[pose[starts]] - 0.5 * time_step,
+            "end": times[pose[ends]] + 0.5 * time_step,
             "yaw": yaw[pose[starts]],
         }
 
@@ -358,7 +362,8 @@ class ClosedLoopUtils:
         The post-encroachment time (PET) is the time between the first road
         user leaving a spot and the second one entering it. It is computed for
         every cell both occupy and minimized over the cells; a cell both occupy
-        at the same time has a PET of zero.
+        at the same time, as far as the time step of the occupancy resolves it,
+        has a PET of zero.
 
         Args:
             first: Occupancy intervals of the first road user, see

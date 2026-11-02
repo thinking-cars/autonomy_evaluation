@@ -229,17 +229,22 @@ class TestOccupancy:
         )
 
         assert sorted(map(tuple, occupancy["cell"].tolist())) == [(-1, -1), (-1, 0), (0, -1), (0, 0)]
-        assert occupancy["start"].tolist() == occupancy["end"].tolist() == [0.0] * 4
+        # a single pose estimates the occupancy to within half a time step around it
+        assert occupancy["start"] == pytest.approx([-0.05] * 4)
+        assert occupancy["end"] == pytest.approx([0.05] * 4)
 
     def test_moving_road_user_occupies_a_cell_while_passing_it(self):
-        """A 1 m long road user at 1 m/s covers the cell centered at x = 5.25 m while its center is within 0.5 m of it."""
+        """A 1 m long road user at 1 m/s covers the cell centered at x = 5.25 m while its center is within 0.5 m of it.
+
+        It enters at 4.75 s and leaves at 5.75 s, which the occupancy, resampled every 0.3 s, estimates to within 0.15 s.
+        """
         occupancy = ClosedLoopUtils.occupancy_intervals(
-            np.array([0.0, 10.0]), np.array([0.0, 10.0]), np.zeros(2), np.zeros(2), 1.0, 0.6, 0.5, 0.25
+            np.array([0.0, 10.0]), np.array([0.0, 10.0]), np.zeros(2), np.zeros(2), 1.0, 0.6, 0.5, 0.3
         )
 
         index = next(i for i, cell in enumerate(occupancy["cell"].tolist()) if cell == [10, 0])
-        assert occupancy["start"][index] == pytest.approx(4.75)
-        assert occupancy["end"][index] == pytest.approx(5.75)
+        assert occupancy["start"][index] == pytest.approx(4.75, abs=0.15)
+        assert occupancy["end"][index] == pytest.approx(5.75, abs=0.15)
 
     def test_passing_a_cell_twice_yields_two_intervals(self):
         """A road user returning to a cell occupies it in two separate intervals."""

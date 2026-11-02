@@ -215,6 +215,84 @@ class TestTimeHeadway:
         assert thw["share"] == pytest.approx(2.0 / 3.0)
 
 
+def _drive(duration: float, road_users, period: float = _PERIOD, ego_speed: float = 10.0) -> list:
+    """Samples of the ego vehicle driving along the x axis from x = -20 m, with road users given as functions of time."""
+    return [
+        (
+            index * period,
+            {"x": -20.0 + ego_speed * index * period, "vel_lon": ego_speed},
+            [user(index * period) for user in road_users],
+        )
+        for index in range(int(round(duration / period)) + 1)
+    ]
+
+
+def _crossing_car(t: float) -> object:
+    """A car crossing the path of the ego vehicle at x = 0 northwards at 10 m/s, reaching y = -20 m at 3 s."""
+    return road_user(1, 0.0, -50.0 + 10.0 * t, yaw=math.pi / 2.0, vel_lon=10.0)
+
+
+class TestPostEncroachmentTime:
+    """Tests the post-encroachment time of the ego vehicle and the other road users passing the same spots."""
+
+    def test_crossing_behind_the_ego_vehicle(self):
+        """A car crossing 2.45 s after the ego vehicle left the intersection, as computed for the occupied cells by hand.
+
+        The ego vehicle passes x = 0.75 m with its rear at 2.275 s, the crossing car reaches y = -0.75 m with its front at
+        4.725 s, the closest pair of leaving and entering among the shared cells of 0.5 m. Both times are estimated to
+        within half the time step of 0.1 s, so the PET is resolved to within the time step.
+        """
+        pet = _evaluate(_drive(7.0, [_crossing_car]))["pet"]
+
+        assert pet["_value_"] == pytest.approx(2.45, abs=0.1)
+        assert pet["num_encounters"] == 1
+        assert pet["ego_first"] == 1
+        assert pet["types"]["crossing"]["num_encounters"] == 1
+
+    def test_following_a_car(self):
+        """The ego vehicle reaches the spot the rear of a car 16 m ahead left after 1.6 s at 10 m/s."""
+
+        def lead(t: float) -> object:
+            return road_user(2, 0.0 + 10.0 * t, 0.0, vel_lon=10.0)
+
+        pet = _evaluate(_drive(5.0, [lead]))["pet"]
+
+        assert pet["_value_"] == pytest.approx(1.6, abs=0.1)
+        assert pet["ego_first"] == 0
+        assert pet["types"]["rear_end"] == {"_value_": pet["_value_"], "num_encounters": 1}
+
+    def test_car_in_the_neighboring_lane_is_no_encounter(self):
+        """Road users in parallel lanes never pass the same spot."""
+
+        def neighbor(t: float) -> object:
+            return road_user(3, -10.0 + 10.0 * t, 3.5, vel_lon=10.0)
+
+        pet = _evaluate(_drive(5.0, [neighbor]))["pet"]
+
+        assert pet["_value_"] is None
+        assert pet["num_encounters"] == 0
+
+    def test_spots_passed_long_after_each_other_are_no_encounter(self):
+        """A car 146 m ahead passes the same spots 14.6 s before the ego vehicle, beyond the maximum PET of 10 s."""
+
+        def far_ahead(t: float) -> object:
+            return road_user(4, 130.0 + 10.0 * t, 0.0, vel_lon=10.0)
+
+        samples = _drive(20.0, [far_ahead], period=1.0)
+
+        assert _evaluate(samples)["pet"]["num_encounters"] == 0
+        assert _evaluate(samples, config={"criticality": {"pet": {"max_pet": 20.0}}})["pet"]["_value_"] == pytest.approx(
+            14.6, abs=0.1
+        )
+
+    def test_road_users_of_different_scenes_never_encounter(self):
+        """The crossing car enters the intersection in a scene of its own, which is a sequence of its own."""
+        samples = _drive(7.0, [_crossing_car])
+        scene_ids = ["a" if stamp < 3.5 else "b" for stamp, _, _ in samples]
+
+        assert _evaluate(samples, scene_ids=scene_ids)["pet"]["num_encounters"] == 0
+
+
 class TestCriticalitySelection:
     """Tests selecting the criticality metrics."""
 

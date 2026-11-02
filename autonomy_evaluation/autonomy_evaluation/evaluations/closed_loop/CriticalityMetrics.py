@@ -15,6 +15,9 @@ road users are considered, whatever their class:
   small times to collision.
 - ``thw``: time headway to the road user the ego vehicle follows, found in a
   corridor along the path ahead of the ego vehicle.
+- ``pet``: post-encroachment time, i.e. the time between the ego vehicle and
+  another road user passing the same spot, classified by the angle of their
+  paths like the conflict types of the Surrogate Safety Assessment Model (SSAM).
 """
 
 from __future__ import annotations
@@ -37,6 +40,13 @@ COLLISION_TYPES: Dict[str, Optional[bool]] = {
     "active_lateral": None,
     "stopped_ego": False,
     "stopped_object": True,
+}
+
+# Conflict types of encounters, following SSAM, by the largest angle in radians between the paths of the road users
+CONFLICT_TYPES: Dict[str, float] = {
+    "rear_end": math.radians(30.0),
+    "lane_change": math.radians(85.0),
+    "crossing": math.pi,
 }
 
 
@@ -266,6 +276,118 @@ class TimeHeadway(_CriticalityMetric):
         }
 
 
+class PostEncroachmentTime(_CriticalityMetric):
+    """Post-encroachment time (PET): time between the ego vehicle and another road user passing the same spot.
+
+    The trajectories of the ego vehicle and of each road user over a sequence of
+    samples, resampled at ``time_step``, are rasterized into the cells of a
+    ground grid of ``cell_size``. For every cell both pass, the PET is the time
+    between the first road user leaving the cell and the second one entering it,
+    zero if both occupy it at the same time. The PET of an encounter is the
+    smallest PET over the cells, and the road users encounter each other if it
+    is at most ``max_pet``. Each road user encounters the ego vehicle at most
+    once per sequence, at its smallest PET. Its resolution is ``time_step``.
+
+    Encounters are classified by the angle between the headings of both road
+    users at the cell of their PET, like the conflict types of SSAM:
+    ``rear_end`` below 30°, e.g. following a road user, ``lane_change`` up to
+    85°, and ``crossing`` beyond, which includes oncoming road users.
+
+    Configuration:
+        ``cell_size``: edge length in meters of the cells of the ground grid.
+        ``time_step``: seconds between the resampled poses of the trajectories.
+        ``max_pet``: PET in seconds up to which two road users encounter each
+        other; road users passing the same spot further apart in time do not.
+    """
+
+    NAME = "pet"
+
+    def default_config(self) -> Dict[str, Any]:
+        """Rasterize at 0.5 m and resample at 0.1 s, counting encounters within 10 s."""
+        return {"cell_size": 0.5, "time_step": 0.1, "max_pet": 10.0}
+
+    def compute_sample(self, sample: Sample) -> Dict[str, Any]:
+        """Record the footprints of the ego vehicle and the other road users at a sample.
+
+        Returns:
+            ``{"stamp", "ego", "ids", "rectangles"}``: the stamp of the sample,
+            the footprint of the ego vehicle as ``(x, y, yaw, length, width)``,
+            and the IDs and footprints of the other road users as arrays.
+        """
+        objects = object_states(sample)
+        return {"stamp": sample.stamp, "ego": ego_state(sample).rectangle, "ids": objects.ids, "rectangles": objects.rectangles}
+
+    def aggregate(self, aggregation: Aggregation) -> Dict[str, Any]:
+        """Find the encounters of the ego vehicle with the other road users and report their PETs.
+
+        Returns:
+            ``{"_value_", "num_encounters", "ego_first", "types"}``: the smallest
+            PET of all encounters in seconds, ``None`` without encounter; the
+            number of encounters and of those in which the ego vehicle passed the
+            spot first; and ``{"_value_", "num_encounters"}`` per conflict type.
+        """
+        encounters: List[Dict[str, Any]] = []
+        for sequence in aggregation.sequences():
+            records = aggregation.records(self.name, sequence)
+            if len(records) > 1 and all(record["stamp"] is not None for record in records):
+                encounters += self._encounters(records)
+        types = {
+            conflict_type: [encounter["pet"] for encounter in encounters if encounter["type"] == conflict_type]
+            for conflict_type in CONFLICT_TYPES
+        }
+        return {
+            "_value_": min((encounter["pet"] for encounter in encounters), default=None),
+            "num_encounters": len(encounters),
+            "ego_first": sum(encounter["ego_first"] for encounter in encounters),
+            "types": {
+                conflict_type: {"_value_": min(pets, default=None), "num_encounters": len(pets)}
+                for conflict_type, pets in types.items()
+            },
+        }
+
+    def _encounters(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Find the encounters of the ego vehicle with the other road users over the records of one sequence."""
+        cell_size, time_step, max_pet = self.config["cell_size"], self.config["time_step"], self.config["max_pet"]
+        times = np.array([record["stamp"] for record in records])
+        ego = np.array([record["ego"] for record in records])
+        ego_occupancy = ClosedLoopUtils.occupancy_intervals(
+            times, ego[:, 0], ego[:, 1], ego[:, 2], ego[:, 3].max(), ego[:, 4].max(), cell_size, time_step
+        )
+        # road users that never come close to the area the ego vehicle passes cannot share a cell with it
+        ego_radius = 0.5 * float(np.hypot(ego[:, 3], ego[:, 4]).max())
+        area_min, area_max = ego[:, :2].min(axis=0) - ego_radius, ego[:, :2].max(axis=0) + ego_radius
+
+        encounters = []
+        for object_id, trajectory in _trajectories(records).items():
+            radius = 0.5 * float(np.hypot(trajectory[:, 4], trajectory[:, 5]).max())
+            if (trajectory[:, 1:3].max(axis=0) + radius < area_min).any() or (
+                trajectory[:, 1:3].min(axis=0) - radius > area_max
+            ).any():
+                continue
+            occupancy = ClosedLoopUtils.occupancy_intervals(
+                trajectory[:, 0],
+                trajectory[:, 1],
+                trajectory[:, 2],
+                trajectory[:, 3],
+                trajectory[:, 4].max(),
+                trajectory[:, 5].max(),
+                cell_size,
+                time_step,
+            )
+            encounter = ClosedLoopUtils.post_encroachment_time(ego_occupancy, occupancy)
+            if encounter is None or encounter["pet"] > max_pet:
+                continue
+            encounters.append(
+                {
+                    "object_id": object_id,
+                    "pet": encounter["pet"],
+                    "ego_first": encounter["first_enters"],
+                    "type": next(name for name, angle in CONFLICT_TYPES.items() if encounter["angle"] <= angle),
+                }
+            )
+        return encounters
+
+
 def time_to_collision(sample: Sample, horizon: float, time_step: float) -> Optional[np.ndarray]:
     """Compute the time to collision of the ego vehicle with each road user of a sample.
 
@@ -350,3 +472,20 @@ def _collisions(sample: Sample) -> List[Dict[str, Any]]:
         return collisions
 
     return sample.memo("collisions", find)
+
+
+def _trajectories(records: List[Dict[str, Any]]) -> Dict[int, np.ndarray]:
+    """Gather the trajectory of each road user over the records of the PET of one sequence.
+
+    Returns:
+        Road user ID to an array of its ``(stamp, x, y, yaw, length, width)``
+        at the samples it is present in, in the order of the samples.
+    """
+    trajectories: Dict[int, List[Tuple[float, ...]]] = {}
+    for record in records:
+        x, y, yaw, length, width = record["rectangles"]
+        for index, object_id in enumerate(record["ids"].tolist()):
+            trajectories.setdefault(object_id, []).append(
+                (record["stamp"], x[index], y[index], yaw[index], length[index], width[index])
+            )
+    return {object_id: np.array(trajectory) for object_id, trajectory in trajectories.items()}
