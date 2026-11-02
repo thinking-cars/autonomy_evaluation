@@ -8,6 +8,7 @@ services:
       NAME: autonomy_evaluation
       # --- other -----
       REQUEST_SAMPLES: ~/request_samples
+      NEXT_SCENE: ~/next_scene
       FINISH: ~/finish
       LOG_LEVEL: ${LOG_LEVEL:-info}
       USE_SIM_TIME: ${USE_SIM_TIME:-true}
@@ -41,4 +42,5 @@ services:
           $${MAP_SERVER:+map_server:=$${MAP_SERVER}} \
           $${RESULTS_PATH:+results_path:=$${RESULTS_PATH}} \
           request_samples:=$${REQUEST_SAMPLES} \
+          next_scene:=$${NEXT_SCENE} \
           finish:=$${FINISH}

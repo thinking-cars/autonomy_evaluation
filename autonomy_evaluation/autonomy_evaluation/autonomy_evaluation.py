@@ -523,6 +523,15 @@ class AutonomyEvaluation(Node):
         self.finish_service = self.create_service(Trigger, "~/finish", self.finish_callback)
         self.shutdown_timer: Optional[Timer] = None
 
+        # Whoever publishes the samples may also separate them into scenes, e.g. a closed-loop
+        # simulation running one scenario after the other: once the service has been called, the
+        # samples evaluated between two calls form a scene of their own, numbered in the order the
+        # scenes were evaluated
+        self.next_scene_service = self.create_service(Trigger, "~/next_scene", self.next_scene_callback)
+        self.separates_scenes = False
+        self.samples_of_current_scene: list[dict[str, Any]] = []
+        self.num_separated_scenes = 0
+
         # With an external sample source, the samples are evaluated as they arrive. Whoever
         # publishes them receives the responses of the dataset, if any, so the evaluation neither
         # learns the scenes of the samples nor when publishing has ended, and reports its results
@@ -535,6 +544,7 @@ class AutonomyEvaluation(Node):
                 )
             self.get_logger().info(
                 "Evaluating the samples published by others, call "
+                f"'{self.resolve_service_name(self.next_scene_service.srv_name)}' to start the next scene and "
                 f"'{self.resolve_service_name(self.finish_service.srv_name)}' or stop the node to report the results"
             )
             return
@@ -844,6 +854,10 @@ class AutonomyEvaluation(Node):
             self.get_logger().warn(f"Evaluation '{self.evaluation}' evaluated no sample, no metrics are aggregated")
             return
 
+        # the samples evaluated since the last scene ended form the last scene
+        if self.separates_scenes:
+            self.end_scene()
+
         results = self.evaluation_handler.finalize(complete=complete)
         aggregated_metrics = json.dumps(results["metrics"], indent=2, default=str)
         evaluated_samples = f"{results['num_samples']} evaluated sample(s) of {results['num_scenes']} scene(s)"
@@ -902,6 +916,65 @@ class AutonomyEvaluation(Node):
         )
         return response
 
+    def next_scene_callback(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
+        """Ends the current scene on request, so that the samples evaluated afterwards belong to the next scene
+
+        With an external sample source, the evaluation learns the scenes of the samples only from
+        whoever publishes them, e.g. a closed-loop simulation that runs one scenario after the
+        other and calls this service between two scenarios. Once the service has been called, the
+        samples evaluated since the previous call, or since the start, form a scene of their own,
+        named 'scene_<n>' in the order the scenes were evaluated; the samples evaluated after the
+        last call form the last scene once the evaluation finishes. As a scene without samples is
+        skipped, the service may as well be called before every scenario as after every scenario.
+        With the dataset as sample source, the dataset reports the scenes of the samples instead.
+
+        Args:
+            request (Trigger.Request): request to start the next scene, without content
+            response (Trigger.Response): response to fill
+
+        Returns:
+            Trigger.Response: whether the scene was ended, and which scene it was
+        """
+        if self.requests_samples:
+            response.success = False
+            response.message = (
+                f"The dataset reports the scenes of the samples it publishes, scenes are only started on request with "
+                f"sample source '{SAMPLE_SOURCE_EXTERNAL}'"
+            )
+            return response
+        if self.evaluation_finished:
+            response.success = False
+            response.message = f"Evaluation '{self.evaluation}' has already finished"
+            return response
+
+        self.separates_scenes = True
+        num_samples = len(self.samples_of_current_scene)
+        scene_id = self.end_scene()
+        response.success = True
+        if scene_id is None:
+            response.message = "No sample was evaluated since the last scene ended, the following samples form the next scene"
+        else:
+            response.message = (
+                f"Scene '{scene_id}' ended after {num_samples} evaluated sample(s), the following samples form the next scene"
+            )
+        self.get_logger().info(response.message)
+        return response
+
+    def end_scene(self) -> Optional[str]:
+        """Attributes the samples evaluated since the last scene ended to a scene of their own
+
+        Returns:
+            Optional[str]: name of the scene, None if no sample was evaluated since the last scene ended
+        """
+        if not self.samples_of_current_scene:
+            return None
+        self.num_separated_scenes += 1
+        scene_id = f"scene_{self.num_separated_scenes}"
+        for entry in self.samples_of_current_scene:
+            entry["scene_id"] = scene_id
+        self.samples_of_current_scene = []
+        return scene_id
+
     def shutdown(self):
         """Stops the node, as there is nothing left to evaluate once the evaluation has finished
 
@@ -952,12 +1025,15 @@ class AutonomyEvaluation(Node):
         self.num_evaluated_samples += 1
         # attribute the sample to the scene the dataset published it from, which the dataset may
         # only report after the sample has been evaluated; with an external sample source, the
-        # scene is only reported to whoever requested the sample, if at all
+        # sample belongs to the current scene, which ends once whoever publishes the samples
+        # starts the next one, if at all
         if self.requests_samples:
             if self.scenes_awaiting_sample:
                 result["scene_id"] = self.scenes_awaiting_sample.popleft()
             else:
                 self.samples_awaiting_scene.append(result)
+        else:
+            self.samples_of_current_scene.append(result)
         # a system under test that needs longer for some samples must not run into the timeout,
         # which therefore restarts with every evaluated sample
         self.evaluation_deadline = time.monotonic() + self.evaluation_timeout

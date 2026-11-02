@@ -46,7 +46,7 @@ ros2 launch autonomy_evaluation autonomy_evaluation.launch.py \
   results_path:=/results/object_detection_3d.json
 ```
 
-With `sample_source` set to `external`, the node requests no samples itself and evaluates every sample that others publish, e.g. a closed-loop simulation, a live system, or the dataset stepped through with the [playback panel](https://github.com/thinking-cars/autonomy_datasets/blob/main/autonomy_datasets_rviz_plugins/README.md) in RViz, whose _Service_ field has to name the `request_samples` service of the dataset node (`/datasets/request_samples` by default). `samples_per_request`, `sample_ids` and `evaluation_timeout` then have no effect. As the node receives no responses of a dataset, it neither learns the scenes of the samples, so `scenes` stays empty, nor when publishing has ended: the results of the evaluated samples are reported once whoever publishes the samples calls the `~/finish` service, e.g. a closed-loop simulation at the end of its scenario, or once the node is stopped, e.g. with Ctrl-C, which marks them as incomplete.
+With `sample_source` set to `external`, the node requests no samples itself and evaluates every sample that others publish, e.g. a closed-loop simulation, a live system, or the dataset stepped through with the [playback panel](https://github.com/thinking-cars/autonomy_datasets/blob/main/autonomy_datasets_rviz_plugins/README.md) in RViz, whose _Service_ field has to name the `request_samples` service of the dataset node (`/datasets/request_samples` by default). `samples_per_request`, `sample_ids` and `evaluation_timeout` then have no effect. As the node receives no responses of a dataset, whoever publishes the samples has to tell it about their scenes and the end of publishing. It separates the samples into scenes by calling the `~/next_scene` service, e.g. a closed-loop simulation between two scenarios: once it has been called, the samples evaluated between two calls form a scene of their own, named `scene_1`, `scene_2`, … in the order they were evaluated, and scenes without samples are skipped, so it may be called before or after every scenario alike; without any call, `scenes` stays empty. The results of the evaluated samples are reported once whoever publishes the samples calls the `~/finish` service, e.g. a closed-loop simulation after its last scenario, or once the node is stopped, e.g. with Ctrl-C, which marks them as incomplete.
 
 ```bash
 # look at the samples of a dataset one by one, stepping through them in RViz
@@ -56,7 +56,7 @@ ros2 launch autonomy_evaluation autonomy_evaluation.launch.py \
   visualize:=true \
   sample_source:=external
 
-# evaluate a running closed-loop simulation, which calls '~/finish' at the end of its scenario
+# evaluate a running closed-loop simulation, which calls '~/next_scene' between its scenarios and '~/finish' after the last one
 ros2 launch autonomy_evaluation autonomy_evaluation.launch.py \
   evaluation:=closed_loop \
   ego_data:=/simulation/ego_data \
@@ -78,6 +78,7 @@ ros2 launch autonomy_evaluation autonomy_evaluation.launch.py \
 flowchart LR
     NODE("autonomy_evaluation")
     SS0:::hidden o--o|~/finish| NODE
+    SS1:::hidden o--o|~/next_scene| NODE
     NODE o--o|~/request_samples| SC0:::hidden
     classDef hidden display: none;
 ```
@@ -87,6 +88,7 @@ flowchart LR
 | Service | Type | Description |
 | --- | --- | --- |
 | `~/finish` | `std_srvs/srv/Trigger` | finish the evaluation: report its results and shut down; the results are complete with sample source `external`, and with sample source `dataset` once the dataset has published its last sample |
+| `~/next_scene` | `std_srvs/srv/Trigger` | start the next scene with sample source `external`: the samples evaluated since the previous call form a scene of their own, e.g. a scenario of a closed-loop simulation |
 
 #### Service Clients
 
@@ -115,7 +117,8 @@ flowchart LR
 | Argument | Default | Description |
 | --- | --- | --- |
 | `request_samples` | `"~/request_samples"` | service of the dataset node used to request the samples to evaluate |
-| `finish` | `"~/finish"` | service finishing the evaluation, e.g. called by a closed-loop simulation at the end of its scenario |
+| `next_scene` | `"~/next_scene"` | service starting the next scene of the samples published by others, e.g. called by a closed-loop simulation between two scenarios |
+| `finish` | `"~/finish"` | service finishing the evaluation, e.g. called by a closed-loop simulation after its last scenario |
 | `evaluation` | `"object_detection_3d"` | evaluation to run |
 | `config` | `""` | path of a ROS parameter file configuring the evaluation by parameters named `<evaluation>.<entry>` (default configuration if empty) |
 | `name` | `"autonomy_evaluation"` | node name |

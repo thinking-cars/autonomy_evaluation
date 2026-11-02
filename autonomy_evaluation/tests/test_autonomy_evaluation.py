@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import array
 from collections import deque
+from functools import partial
 from types import SimpleNamespace
 
 import pytest
@@ -314,6 +315,7 @@ def _evaluating_node(requests_samples: bool) -> SimpleNamespace:
         num_evaluated_samples=0,
         scenes_awaiting_sample=deque(),
         samples_awaiting_scene=deque(),
+        samples_of_current_scene=[],
         evaluation_timeout=60.0,
         evaluation_deadline=None,
         results_path="",
@@ -382,6 +384,8 @@ class TestEvaluateSample:
         assert node.num_advances == 0
         # the scenes are only reported to whoever published the samples, so no sample waits for one
         assert not node.samples_awaiting_scene
+        # but the samples belong to the current scene, until whoever publishes them starts the next one
+        assert node.samples_of_current_scene == node.evaluation_handler.recorded_samples
 
 
 class _FakeRequestClient:
@@ -743,6 +747,7 @@ def _node(num_evaluated_samples: int = 2, results_path: str = "/results/evaluati
         num_evaluated_samples=num_evaluated_samples,
         results_path=results_path,
         request_timer=SimpleNamespace(cancel=lambda: None),
+        separates_scenes=False,
         get_logger=lambda logger=_FakeLogger(): logger,
     )
 
@@ -878,3 +883,106 @@ class TestFinish:
         assert not response.success
         assert node.finalized == []
         assert node.timers == []
+
+
+def _scene_separating_node(requests_samples: bool = False) -> SimpleNamespace:
+    """Stub the node state that starting the next scene on request reads, with an external sample source by default."""
+    node = SimpleNamespace(
+        evaluation="counting",
+        evaluation_finished=False,
+        requests_samples=requests_samples,
+        separates_scenes=False,
+        samples_of_current_scene=[],
+        num_separated_scenes=0,
+        get_logger=lambda logger=_FakeLogger(): logger,
+    )
+    node.end_scene = partial(AutonomyEvaluation.end_scene, node)
+    return node
+
+
+def _evaluated_samples(node: SimpleNamespace, num_samples: int) -> list:
+    """Evaluate the given number of samples in the current scene of the node, still without a scene."""
+    entries = [{"sample_id": str(index), "scene_id": None, "stamp": float(index), "metrics": {}} for index in range(num_samples)]
+    node.samples_of_current_scene.extend(entries)
+    return entries
+
+
+class TestNextScene:
+    """Tests separating the samples published by others into scenes, e.g. the scenarios of a closed-loop simulation."""
+
+    def test_samples_before_the_call_form_the_first_scene(self):
+        """A simulation calling the service after every scenario ends its first scenario with the first call."""
+        node = _scene_separating_node()
+        first = _evaluated_samples(node, 3)
+
+        response = AutonomyEvaluation.next_scene_callback(node, Trigger.Request(), Trigger.Response())
+
+        assert response.success
+        assert "'scene_1' ended after 3 evaluated sample(s)" in response.message
+        assert [entry["scene_id"] for entry in first] == ["scene_1"] * 3
+        assert node.samples_of_current_scene == []
+
+    def test_call_before_the_first_sample_starts_the_first_scene(self):
+        """A simulation calling the service before every scenario starts its first scenario with the first call."""
+        node = _scene_separating_node()
+
+        response = AutonomyEvaluation.next_scene_callback(node, Trigger.Request(), Trigger.Response())
+        first = _evaluated_samples(node, 2)
+        AutonomyEvaluation.next_scene_callback(node, Trigger.Request(), Trigger.Response())
+
+        assert response.success
+        assert "No sample was evaluated" in response.message
+        assert [entry["scene_id"] for entry in first] == ["scene_1"] * 2
+
+    def test_scenes_are_numbered_in_the_order_they_were_evaluated(self):
+        """Each call ends the current scene and the following samples form the next one."""
+        node = _scene_separating_node()
+        first = _evaluated_samples(node, 2)
+        AutonomyEvaluation.next_scene_callback(node, Trigger.Request(), Trigger.Response())
+        second = _evaluated_samples(node, 1)
+        AutonomyEvaluation.next_scene_callback(node, Trigger.Request(), Trigger.Response())
+
+        assert [entry["scene_id"] for entry in first + second] == ["scene_1", "scene_1", "scene_2"]
+
+    def test_finishing_ends_the_last_scene(self):
+        """The samples evaluated after the last call form the last scene once the evaluation finishes."""
+        node = _node()
+        node.requests_samples = False
+        node.samples_of_current_scene = []
+        node.num_separated_scenes = 0
+        node.end_scene = partial(AutonomyEvaluation.end_scene, node)
+        node.separates_scenes = True
+        last = _evaluated_samples(node, 3)
+
+        AutonomyEvaluation.finalize_evaluation(node)
+
+        assert [entry["scene_id"] for entry in last] == ["scene_1"] * 3
+
+    def test_samples_stay_without_scene_if_scenes_are_never_started(self):
+        """Without any call, the samples published by others are evaluated without scenes, as before."""
+        node = _node()
+        node.samples_of_current_scene = []
+        entries = _evaluated_samples(node, 2)
+
+        AutonomyEvaluation.finalize_evaluation(node)
+
+        assert [entry["scene_id"] for entry in entries] == [None, None]
+
+    def test_rejects_separating_the_scenes_of_the_dataset(self):
+        """With the dataset as sample source, the dataset reports the scenes of its samples instead."""
+        node = _scene_separating_node(requests_samples=True)
+        entries = _evaluated_samples(node, 1)
+
+        response = AutonomyEvaluation.next_scene_callback(node, Trigger.Request(), Trigger.Response())
+
+        assert not response.success
+        assert entries[0]["scene_id"] is None
+
+    def test_rejects_starting_a_scene_of_a_finished_evaluation(self):
+        """A finished evaluation has reported its results already."""
+        node = _scene_separating_node()
+        node.evaluation_finished = True
+
+        response = AutonomyEvaluation.next_scene_callback(node, Trigger.Request(), Trigger.Response())
+
+        assert not response.success
