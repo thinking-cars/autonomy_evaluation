@@ -5,8 +5,8 @@
 
 Evaluates the ego vehicle a system under test drives, e.g. a planner in a
 closed-loop simulation, by its behavior over the whole run: its criticality
-towards the other road users, its compliance with the traffic rules and its
-comfort, i.e. how smoothly it drives.
+towards the other road users, its compliance with the traffic rules, its
+progress and its comfort, i.e. how smoothly it drives.
 
 The evaluation reads the ``ego_data`` of the ego vehicle (evaluated) and, for
 the metrics that involve other road users, the ``objects`` around it
@@ -23,6 +23,8 @@ Metrics, grouped and selectable via ``metrics``:
 - ``rule_compliance``: ``drivable_area``, ``driving_direction`` and
   ``speed_limit`` of the ego vehicle, checked against the Lanelet2 map
   (:mod:`~autonomy_evaluation.evaluations.closed_loop.RuleComplianceMetrics`).
+- ``progress``: ``distance`` the ego vehicle drives
+  (:mod:`~autonomy_evaluation.evaluations.closed_loop.ProgressMetrics`).
 - ``comfort``: ``acceleration``, ``jerk`` and ``yaw_rate`` of the ego vehicle
   (:mod:`~autonomy_evaluation.evaluations.closed_loop.ComfortMetrics`).
 
@@ -41,13 +43,14 @@ from autonomy_evaluation.evaluations.closed_loop.CriticalityMetrics import (
     TimeHeadway,
     TimeToCollision,
 )
+from autonomy_evaluation.evaluations.closed_loop.ProgressMetrics import DistanceDriven
 from autonomy_evaluation.evaluations.closed_loop.RuleComplianceMetrics import DrivableArea, DrivingDirection, SpeedLimit
 from autonomy_evaluation.evaluations.Evaluation import Evaluation
 from autonomy_evaluation.evaluations.Metric import MetricGroup
 
 
 class ClosedLoop(Evaluation):
-    """Closed-loop evaluation of the criticality, the rule compliance and the comfort of the ego vehicle.
+    """Closed-loop evaluation of the criticality, the rule compliance, the progress and the comfort of the ego vehicle.
 
     See the module docstring for the metrics and their inputs.
     """
@@ -55,7 +58,7 @@ class ClosedLoop(Evaluation):
     VERSION = "1.1.0"
     RELEASE_NOTES = {
         "1.0.0": "Initial implementation",
-        "1.1.0": "Rule compliance metrics: drivable area, driving direction and speed limit",
+        "1.1.0": "Rule compliance metrics: drivable area, driving direction and speed limit; progress: distance driven",
     }
 
     def __init__(self) -> None:
@@ -63,15 +66,16 @@ class ClosedLoop(Evaluation):
         super().__init__(
             name="closed_loop",
             description="Driving behavior of the ego vehicle a system under test drives in closed loop: its criticality "
-            "towards other road users, its compliance with the traffic rules and its comfort.",
+            "towards other road users, its compliance with the traffic rules, its progress and its comfort.",
         )
 
     def metrics(self) -> List[Any]:
-        """Compose the evaluation of the criticality, the rule compliance and the comfort metrics."""
+        """Compose the evaluation of the criticality, the rule compliance, the progress and the comfort metrics."""
         return [
             EgoMotion(),
             MetricGroup("criticality", [Collision(), TimeToCollision(), TimeHeadway(), PostEncroachmentTime()]),
             MetricGroup("rule_compliance", [DrivableArea(), DrivingDirection(), SpeedLimit()]),
+            MetricGroup("progress", [DistanceDriven()]),
             MetricGroup("comfort", [Acceleration(), Jerk(), YawRate()]),
         ]
 

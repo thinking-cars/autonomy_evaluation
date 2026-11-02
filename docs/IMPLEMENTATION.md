@@ -132,7 +132,7 @@ The TP errors are measured with a maximum match distance of 2 meters; their mean
 
 ### Closed-Loop
 
-Evaluates the ego vehicle a system under test drives, e.g. a planner in a closed-loop simulation, by its behavior over the whole run: its criticality towards the other road users, i.e. how close it comes to colliding with them or does, its compliance with the traffic rules, i.e. whether it stays on the road, drives in the direction of travel and keeps the speed limit, and its comfort, i.e. how smoothly it drives. The criticality metrics follow the definitions of the review of [Westhofen et al. (2023), Criticality Metrics for Automated Driving](https://doi.org/10.1007/s11831-022-09788-7), the classification of collisions follows [nuPlan](https://nuplan-devkit.readthedocs.io/en/latest/metrics_description.html), the classification of encounters the conflict types of the [Surrogate Safety Assessment Model (SSAM)](https://www.fhwa.dot.gov/publications/research/safety/08051/). The rule compliance metrics check the rules nuPlan checks as drivable area, driving direction and speed limit compliance against the lanes of a Lanelet2 map.
+Evaluates the ego vehicle a system under test drives, e.g. a planner in a closed-loop simulation, by its behavior over the whole run: its criticality towards the other road users, i.e. how close it comes to colliding with them or does, its compliance with the traffic rules, i.e. whether it stays on the road, drives in the direction of travel and keeps the speed limit, its progress, i.e. whether it gets ahead, and its comfort, i.e. how smoothly it drives. The criticality metrics follow the definitions of the review of [Westhofen et al. (2023), Criticality Metrics for Automated Driving](https://doi.org/10.1007/s11831-022-09788-7), the classification of collisions follows [nuPlan](https://nuplan-devkit.readthedocs.io/en/latest/metrics_description.html), the classification of encounters the conflict types of the [Surrogate Safety Assessment Model (SSAM)](https://www.fhwa.dot.gov/publications/research/safety/08051/). The rule compliance metrics check the rules nuPlan checks as drivable area, driving direction and speed limit compliance against the lanes of a Lanelet2 map.
 
 | Topic | Type | Role | Description |
 | --- | --- | --- | --- |
@@ -163,7 +163,7 @@ Metrics are computed based on the following assumptions:
 
 | Entry | Default | Description |
 | --- | --- | --- |
-| `metrics` | `[criticality, rule_compliance, comfort]` | selected metrics: a group, e.g. `comfort`, or single metrics of a group, e.g. `criticality.ttc` |
+| `metrics` | `[criticality, rule_compliance, progress, comfort]` | selected metrics: a group, e.g. `comfort`, or single metrics of a group, e.g. `criticality.ttc` |
 | `ego_object_id` | `-1` | ID of the ego vehicle among the objects, which is left out of them; `-1` if the objects do not contain it |
 | `criticality.collision.standstill_speed` | `0.1` | speed in `m/s` below which a road user stands still |
 | `criticality.ttc.horizon` | `5.0` | seconds the motion is extrapolated for; longer TTCs are none |
@@ -178,6 +178,7 @@ Metrics are computed based on the following assumptions:
 | `rule_compliance.drivable_area.tolerance` | `0.3` | distance in meters a corner of the footprint may lie outside the drivable area without violating it, as in nuPlan |
 | `rule_compliance.driving_direction.min_speed` | `0.1` | speed in `m/s` below which the ego vehicle stands still and drives in no direction |
 | `rule_compliance.speed_limit.tolerance` | `0.0` | speed in `m/s` by which the speed limit may be exceeded without violating it |
+| `progress.distance.standstill_speed` | `0.1` | speed in `m/s` below which the ego vehicle stands still |
 | `max_sample_interval` | `1.0` | seconds between two consecutive samples beyond which they belong to different sequences |
 
 ```yaml
@@ -194,7 +195,7 @@ Metrics are computed based on the following assumptions:
 <details>
 <summary>Output metrics</summary>
 
-The results hold the `metrics` over all evaluated samples and, under `scenes`, those of each scene, grouped into `criticality`, `rule_compliance` and `comfort`. Each metric holds its aggregated value under `_value_`, next to its sub-metrics. A value that cannot be computed, e.g. a jerk of single samples, is `null`. The evaluation reports no overall value, so the top-level `_value_` is `null`.
+The results hold the `metrics` over all evaluated samples and, under `scenes`, those of each scene, grouped into `criticality`, `rule_compliance`, `progress` and `comfort`. Each metric holds its aggregated value under `_value_`, next to its sub-metrics. A value that cannot be computed, e.g. a jerk of single samples, is `null`. The evaluation reports no overall value, so the top-level `_value_` is `null`.
 
 | Metric | Description |
 | - | - |
@@ -220,6 +221,9 @@ The results hold the `metrics` over all evaluated samples and, under `scenes`, t
 | `rule_compliance.drivable_area.max_distance` | Largest distance of a corner of the footprint outside the drivable area in meters. |
 | `rule_compliance.driving_direction.distance` | Distance driven against the direction of travel in meters. |
 | `rule_compliance.speed_limit.max_excess` | Largest speed above the speed limit in `m/s`, zero if it is never exceeded. |
+| `progress.distance._value_` | Distance the ego vehicle drives in meters, the length of the path through its positions over each sequence. |
+| `progress.distance.mean_speed` | Distance driven over the duration of the sequences in `m/s`. |
+| `progress.distance.standstill_time`, `progress.distance.standstill_share` | Time in seconds and share of the samples with velocity at which the ego vehicle stands still. |
 | `comfort.acceleration._value_` | Largest magnitude of the acceleration of the ego vehicle in `m/s²`. |
 | `comfort.acceleration.longitudinal.{max,min,rms}` | Strongest longitudinal acceleration, strongest deceleration (negative) and root mean square of the longitudinal acceleration in `m/s²`. |
 | `comfort.acceleration.lateral.{max_abs,rms}` | Largest absolute and root mean square lateral acceleration in `m/s²`. |
