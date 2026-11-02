@@ -4,6 +4,7 @@
 import array
 import json
 import signal
+import threading
 import time
 from collections import deque, OrderedDict
 from functools import partial
@@ -18,10 +19,11 @@ from autonomy_evaluation.lanelet2_map_client import Lanelet2MapClient
 from autonomy_evaluation.utils.Lanelet2Map import Lanelet2Map
 from rcl_interfaces.msg import FloatingPointRange, IntegerRange, ParameterDescriptor, SetParametersResult
 from rclpy.clock import Clock, ClockType
-from rclpy.executors import ExternalShutdownException
+from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.publisher import Publisher
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.signals import SignalHandlerOptions
 from rclpy.subscription import Subscription
 from rclpy.task import Future
 from rclpy.timer import Timer
@@ -39,6 +41,9 @@ _SERVICE_WAIT_LOG_INTERVAL_S = 10.0
 # before the dataset node is considered to have shut down, which lets a response that the dataset
 # sent just before shutting down still arrive
 _DATASET_SHUTDOWN_GRACE_PERIOD_S = 2.0
+
+# Seconds the event loop waits for work at most before checking whether the node was asked to stop
+_SPIN_TIMEOUT_S = 0.2
 
 # Interval in seconds at which skipping samples that cannot be evaluated is logged
 _SKIP_LOG_INTERVAL_S = 10.0
@@ -1129,10 +1134,19 @@ class AutonomyEvaluation(Node):
 def main():
     """Initializes ROS, runs the node event loop, and performs shutdown cleanup."""
 
-    rclpy.init()
+    # rclpy only handles SIGINT, as its handling of SIGTERM hangs with rmw_zenoh_cpp. SIGTERM, e.g. from
+    # 'docker stop' or an orchestration stopping the evaluation at the end of a scenario, ends the
+    # event loop instead, which therefore waits for work only for a limited time, so that SIGTERM is
+    # handled even once no more messages arrive.
+    rclpy.init(signal_handler_options=SignalHandlerOptions.SIGINT)
     node = AutonomyEvaluation()
+    stop_requested = threading.Event()
+    signal.signal(signal.SIGTERM, lambda signum, frame: stop_requested.set())
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        while rclpy.ok() and not stop_requested.is_set():
+            executor.spin_once(timeout_sec=_SPIN_TIMEOUT_S)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
