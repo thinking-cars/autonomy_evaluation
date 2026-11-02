@@ -111,7 +111,7 @@ flowchart LR
 | `namespace` | `""` | node namespace |
 | `log_level` | `"info"` | ros logging level |
 | `use_sim_time` | `"true"` | use sim time |
-| `visualize` | `"false"` | publish the per-sample true positives, false positives and false negatives and open RViz |
+| `visualize` | `"false"` | publish the per-sample visualization of the evaluation and open RViz on it, with `config/<evaluation>.rviz` if the package has one, e.g. for `closed_loop`, and `config/conf.rviz` otherwise |
 | `sample_source` | `"dataset"` | 'dataset' requests the samples to evaluate from the dataset one after another; 'external' evaluates the samples published by others, e.g. by a simulation or the playback panel in RViz |
 | `sync_tolerance` | `"0.0"` | seconds by which the stamps of the messages of a sample may differ (0 matches exact stamps only) |
 | `samples_per_request` | `"1"` | number of samples to request from the dataset at a time (0 requests all remaining samples at once) |

@@ -141,6 +141,8 @@ Evaluates the ego vehicle a system under test drives, e.g. a planner in a closed
 
 The samples usually come from a recorded simulation run, which [autonomy_datasets](https://github.com/thinking-cars/autonomy_datasets) replays with the dataset as sample source, so that they are attributed to the scenes of the recordings and the evaluation ends with the last sample. With `sample_source:=external`, e.g. evaluating a running simulation live, the run ends once the simulation calls the `~/finish` service of the node. Every metric over time is computed per contiguous sequence of samples (see [Sequences of samples](#sequences-of-samples)), and gaps of missing samples are reported under `sampling`.
 
+With `visualize:=true`, the node publishes the road users behind the criticality of each sample as `perception_msgs/ObjectList` in the frame of the ego vehicle, which RViz shows with [closed_loop.rviz](../autonomy_evaluation/config/closed_loop.rviz): the colliding road users on `~/colliding_objects`, those with a time to collision within the horizon on `~/approaching_objects`, and the road user the ego vehicle follows on `~/lead_vehicle`. Each is only published while its metric is computed.
+
 Metrics are computed based on the following assumptions:
 
 - **Footprints**: every road user is a rectangle on the ground plane around its geometric center, which is the position of its state moved by the `translation_to_geometric_center` of its reference point, rotated by its yaw. The ego vehicle has the `length` and `width` of its `EgoData`, an object the extent of its state; an object whose state model has no extent is a point.

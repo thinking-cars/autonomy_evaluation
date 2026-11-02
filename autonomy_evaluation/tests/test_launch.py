@@ -1,10 +1,11 @@
 # Copyright Thinking Cars GmbH
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the remapping of the topics of the selected evaluation in the launch file.
+"""Tests for the remapping of the topics and the RViz configuration of the selected evaluation in the launch file.
 
 The launch file does not know the topics of an evaluation in advance, so it remaps whichever topics
-the selected evaluation reads onto the launch arguments of their names.
+the selected evaluation reads onto the launch arguments of their names, and shows its visualization
+with the RViz configuration of its name, if the package has one.
 """
 
 from __future__ import annotations
@@ -99,3 +100,27 @@ class TestInputRemappingsOfSelectedMetrics:
         remappings = _launch_module().input_remappings(_PlannerEvaluation(), {"objects": "/simulation/objects"})
 
         assert remappings == [("ego_data", "~/ego_data"), ("objects", "/simulation/objects")]
+
+
+class TestRvizConfig:
+    """Tests choosing the RViz configuration showing the visualization of the evaluation."""
+
+    def test_evaluation_with_a_configuration_of_its_name(self, tmp_path):
+        """An evaluation whose visualization differs from the default has an RViz configuration of its name."""
+        for name in ("conf.rviz", "closed_loop.rviz"):
+            (tmp_path / name).write_text("")
+
+        assert _launch_module().rviz_config("closed_loop", str(tmp_path)) == str(tmp_path / "closed_loop.rviz")
+
+    def test_default_configuration(self, tmp_path):
+        """Any other evaluation, e.g. one of another package, is shown with the default configuration."""
+        (tmp_path / "conf.rviz").write_text("")
+
+        assert _launch_module().rviz_config("my_package.evaluations:MyEvaluation", str(tmp_path)) == str(tmp_path / "conf.rviz")
+
+    def test_package_holds_a_configuration_per_visualizing_evaluation(self):
+        """The closed-loop evaluation shows its outputs in a configuration of its own."""
+        config_directory = Path(__file__).resolve().parents[1] / "config"
+
+        assert (config_directory / "closed_loop.rviz").is_file()
+        assert (config_directory / "conf.rviz").is_file()

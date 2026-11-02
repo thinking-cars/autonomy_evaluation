@@ -134,6 +134,16 @@ class Collision(_CriticalityMetric):
             "max_relative_speed": max(relative_speeds, default=None),
         }
 
+    def visualization_outputs(self) -> Dict[str, Any]:
+        """Publish the road users colliding with the ego vehicle."""
+        return {"colliding_objects": ObjectList}
+
+    def visualize_sample(self, sample: Sample) -> Dict[str, Any]:
+        """Select the road users overlapping the ego vehicle at a sample, in the frame of the ego vehicle."""
+        objects = object_states(sample)
+        colliding = np.isin(objects.ids, [collision["id"] for collision in _collisions(sample)])
+        return {"colliding_objects": ObjectList(header=objects.header, objects=objects.select(colliding))}
+
     def _collision_type(self, collision: Dict[str, Any]) -> str:
         """Classify a collision at its first sample."""
         standstill_speed = self.config["standstill_speed"]
@@ -188,6 +198,17 @@ class TimeToCollision(_CriticalityMetric):
             return {"ttc": None, "object_id": None}
         closest = int(np.nanargmin(ttc))
         return {"ttc": float(ttc[closest]), "object_id": int(object_states(sample).ids[closest])}
+
+    def visualization_outputs(self) -> Dict[str, Any]:
+        """Publish the road users the ego vehicle collides with within the horizon."""
+        return {"approaching_objects": ObjectList}
+
+    def visualize_sample(self, sample: Sample) -> Dict[str, Any]:
+        """Select the road users with a time to collision within the horizon at a sample, in the frame of the ego vehicle."""
+        objects = object_states(sample)
+        ttc = time_to_collision(sample, self.config["horizon"], self.config["time_step"])
+        approaching = np.zeros(len(objects.objects), dtype=bool) if ttc is None else ~np.isnan(ttc)
+        return {"approaching_objects": ObjectList(header=objects.header, objects=objects.select(approaching))}
 
     def aggregate(self, aggregation: Aggregation) -> Dict[str, Any]:
         """Report the smallest time to collision and the exposure to small ones.
@@ -258,6 +279,17 @@ class TimeHeadway(_CriticalityMetric):
             return None
         index, gap = lead
         return {"thw": gap / ego_state(sample).vel_lon, "gap": gap, "object_id": int(object_states(sample).ids[index])}
+
+    def visualization_outputs(self) -> Dict[str, Any]:
+        """Publish the road user the ego vehicle follows."""
+        return {"lead_vehicle": ObjectList}
+
+    def visualize_sample(self, sample: Sample) -> Dict[str, Any]:
+        """Select the road user the ego vehicle follows at a sample, if any, in the frame of the ego vehicle."""
+        objects = object_states(sample)
+        lead = lead_vehicle(sample, self.config["corridor_width"], self.config["min_speed"])
+        followed = np.arange(len(objects.objects)) == (-1 if lead is None else lead[0])
+        return {"lead_vehicle": ObjectList(header=objects.header, objects=objects.select(followed))}
 
     def aggregate(self, aggregation: Aggregation) -> Dict[str, Any]:
         """Report the smallest and the mean time headway.

@@ -3,16 +3,17 @@
 # Copyright Thinking Cars GmbH
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 from typing import Mapping
 
+from ament_index_python.packages import get_package_share_directory
 from autonomy_evaluation.evaluations import Evaluation, load_evaluation
 from launch import LaunchContext, LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node, SetParameter
 from launch_ros.parameter_descriptions import ParameterValue
-from launch_ros.substitutions import FindPackageShare
 
 
 def input_remappings(evaluation: Evaluation, launch_configurations: Mapping[str, str]) -> list[tuple[str, str]]:
@@ -41,17 +42,32 @@ def input_remappings(evaluation: Evaluation, launch_configurations: Mapping[str,
     return remappings
 
 
+def rviz_config(evaluation_name: str, config_directory: str) -> str:
+    """Choose the RViz configuration showing the visualization of the evaluation.
+
+    Args:
+        evaluation_name (str): name the evaluation is selected with
+        config_directory (str): directory holding the RViz configurations
+
+    Returns:
+        str: path of '<evaluation>.rviz' if the directory holds one, of the default 'conf.rviz' otherwise
+    """
+    path = os.path.join(config_directory, f"{evaluation_name}.rviz")
+    return path if os.path.isfile(path) else os.path.join(config_directory, "conf.rviz")
+
+
 def launch_node(context: LaunchContext, remappings: list) -> list[Node]:
-    """Launch the node with the topics of the selected evaluation remapped.
+    """Launch the node with the topics of the selected evaluation remapped, and RViz showing its visualization.
 
     Args:
         context (LaunchContext): launch context holding the launch arguments
         remappings (list): remappings of the names other than the topics of the evaluation
 
     Returns:
-        list[Node]: node to launch
+        list[Node]: node and, if visualizing, RViz to launch
     """
-    evaluation = load_evaluation(LaunchConfiguration("evaluation").perform(context))
+    evaluation_name = LaunchConfiguration("evaluation").perform(context)
+    evaluation = load_evaluation(evaluation_name)
     # a parameter file configures the evaluation, e.g. which metrics it computes, by parameters named after it
     config = LaunchConfiguration("config").perform(context)
     node = Node(
@@ -75,7 +91,18 @@ def launch_node(context: LaunchContext, remappings: list) -> list[Node]:
         output="screen",
         emulate_tty=True,
     )
-    return [node]
+    rviz = Node(
+        package="rviz2",
+        executable="rviz2",
+        name="rviz2",
+        arguments=[
+            "-d",
+            rviz_config(evaluation_name, os.path.join(get_package_share_directory("autonomy_evaluation"), "config")),
+        ],
+        condition=IfCondition(LaunchConfiguration("visualize")),
+        output="screen",
+    )
+    return [node, rviz]
 
 
 def generate_launch_description():
@@ -151,27 +178,15 @@ def generate_launch_description():
         ),
     ]
 
-    # The topics the evaluation reads depend on the selected evaluation, so the node is only
-    # created once the launch arguments are known
+    # The topics the evaluation reads and the visualization RViz shows depend on the selected
+    # evaluation, so the node and RViz are only created once the launch arguments are known
     remappings = [(la.default_value[0].text, LaunchConfiguration(la.name)) for la in remappable_topics]
-    node = OpaqueFunction(function=launch_node, kwargs={"remappings": remappings})
-    rviz = Node(
-        package="rviz2",
-        executable="rviz2",
-        name="rviz2",
-        arguments=[
-            "-d",
-            PathJoinSubstitution([FindPackageShare("autonomy_evaluation"), "config", "conf.rviz"]),
-        ],
-        condition=IfCondition(LaunchConfiguration("visualize")),
-        output="screen",
-    )
+    nodes = OpaqueFunction(function=launch_node, kwargs={"remappings": remappings})
 
     return LaunchDescription(
         [
             *args,
             SetParameter("use_sim_time", LaunchConfiguration("use_sim_time")),
-            node,
-            rviz,
+            nodes,
         ]
     )

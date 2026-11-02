@@ -293,6 +293,40 @@ class TestPostEncroachmentTime:
         assert _evaluate(samples, scene_ids=scene_ids)["pet"]["num_encounters"] == 0
 
 
+class TestVisualization:
+    """Tests publishing the road users behind the criticality of a sample for RViz."""
+
+    def test_publishes_the_colliding_approaching_and_followed_road_users(self):
+        """Criticality metrics with a per-sample outcome publish the road users behind it, in the frame of the ego vehicle."""
+        evaluation = ClosedLoop()
+        messages = {
+            "ego_data": ego_data(vel_lon=10.0, yaw_rate=0.0),
+            "objects": object_list(
+                [
+                    road_user(1, 3.0, 0.0),  # overlaps the front of the ego vehicle
+                    road_user(2, 24.0, 3.5, yaw=math.pi, vel_lon=10.0),  # oncoming in the neighboring lane
+                    road_user(3, 30.0, -15.0, yaw=math.pi / 2.0, vel_lon=5.0),  # crossing the path when the ego vehicle passes
+                ]
+            ),
+        }
+        evaluation.record_sample(sample_id="0", stamp=0.0, **messages)
+
+        visualization = evaluation.visualize_sample(sample_id="0", **messages)
+
+        assert sorted(evaluation.visualization_outputs()) == ["approaching_objects", "colliding_objects", "lead_vehicle"]
+        assert [obj.id for obj in visualization["colliding_objects"].objects] == [1]
+        assert [obj.id for obj in visualization["approaching_objects"].objects] == [1, 3]
+        assert [obj.id for obj in visualization["lead_vehicle"].objects] == [1]
+        assert visualization["lead_vehicle"].header.frame_id == "map"
+
+    def test_publishes_the_outputs_of_the_computed_metrics_only(self):
+        """Comfort metrics have no per-sample outcome to publish."""
+        evaluation = ClosedLoop()
+        evaluation.configure({"metrics": ["comfort", "criticality.thw"]})
+
+        assert list(evaluation.visualization_outputs()) == ["lead_vehicle"]
+
+
 class TestCriticalitySelection:
     """Tests selecting the criticality metrics."""
 
