@@ -442,5 +442,5 @@ class TestCriticalitySelection:
         assert inputs["map"].static and inputs["map"].optional
 
     def test_all_groups_are_selected_by_default(self):
-        """By default, the closed-loop evaluation computes its criticality and its comfort."""
-        assert ClosedLoop().config["metrics"] == ["criticality", "comfort"]
+        """By default, the closed-loop evaluation computes its criticality, its rule compliance and its comfort."""
+        assert ClosedLoop().config["metrics"] == ["criticality", "rule_compliance", "comfort"]
