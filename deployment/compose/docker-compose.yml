@@ -16,6 +16,7 @@ services:
       CONFIG: ""
       VISUALIZE: false
       SAMPLE_SOURCE: dataset
+      SHUTDOWN_COMPLETES: false
       SYNC_TOLERANCE: 0.0
       SAMPLES_PER_REQUEST: 1
       SAMPLE_IDS: ""
@@ -35,6 +36,7 @@ services:
           $${CONFIG:+config:=$${CONFIG}} \
           visualize:=$${VISUALIZE} \
           sample_source:=$${SAMPLE_SOURCE} \
+          shutdown_completes:=$${SHUTDOWN_COMPLETES} \
           sync_tolerance:=$${SYNC_TOLERANCE} \
           samples_per_request:=$${SAMPLES_PER_REQUEST} \
           $${SAMPLE_IDS:+sample_ids:=$${SAMPLE_IDS}} \

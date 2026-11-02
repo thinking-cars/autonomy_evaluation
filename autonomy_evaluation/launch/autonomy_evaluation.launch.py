@@ -82,6 +82,7 @@ def launch_node(context: LaunchContext, remappings: list) -> list[Node]:
             {"evaluation": LaunchConfiguration("evaluation")},
             {"visualize": ParameterValue(LaunchConfiguration("visualize"), value_type=bool)},
             {"sample_source": LaunchConfiguration("sample_source")},
+            {"shutdown_completes": ParameterValue(LaunchConfiguration("shutdown_completes"), value_type=bool)},
             {"sync_tolerance": ParameterValue(LaunchConfiguration("sync_tolerance"), value_type=float)},
             {"samples_per_request": ParameterValue(LaunchConfiguration("samples_per_request"), value_type=int)},
             {"sample_ids": ParameterValue(LaunchConfiguration("sample_ids"), value_type=str)},
@@ -165,6 +166,13 @@ def generate_launch_description():
             choices=["dataset", "external"],
             description="'dataset' requests the samples to evaluate from the dataset one after another; 'external' "
             "evaluates the samples published by others, e.g. by a simulation or the playback panel in RViz",
+        ),
+        DeclareLaunchArgument(
+            "shutdown_completes",
+            default_value="false",
+            choices=["true", "false"],
+            description="with sample source 'external', mark the results written when the node is stopped as complete, e.g. "
+            "when an orchestration stops the evaluation together with the simulation at the end of each scenario",
         ),
         DeclareLaunchArgument(
             "sync_tolerance",

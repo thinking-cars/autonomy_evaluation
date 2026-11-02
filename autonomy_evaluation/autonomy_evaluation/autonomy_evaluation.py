@@ -40,6 +40,9 @@ _SERVICE_WAIT_LOG_INTERVAL_S = 10.0
 # sent just before shutting down still arrive
 _DATASET_SHUTDOWN_GRACE_PERIOD_S = 2.0
 
+# Interval in seconds at which skipping samples that cannot be evaluated is logged
+_SKIP_LOG_INTERVAL_S = 10.0
+
 # Seconds between answering a request to finish the evaluation and shutting down, which lets the
 # response reach the client before the node is gone
 _FINISH_SHUTDOWN_DELAY_S = 0.5
@@ -246,6 +249,16 @@ class AutonomyEvaluation(Node):
             )
             raise SystemExit(1)
         self.requests_samples = self.sample_source == SAMPLE_SOURCE_DATASET
+
+        self.shutdown_completes = self.declare_and_load_parameter(
+            name="shutdown_completes",
+            param_type=rclpy.Parameter.Type.BOOL,
+            description="with sample source 'external', mark the results written when the node is stopped as complete, "
+            "e.g. when an orchestration stops the evaluation together with the simulation at the end of each scenario",
+            default=False,
+            add_to_auto_reconfigurable_params=False,
+            read_only=True,
+        )
 
         self.sync_tolerance = self.declare_and_load_parameter(
             name="sync_tolerance",
@@ -517,6 +530,7 @@ class AutonomyEvaluation(Node):
         self.dataset_unavailable_since: Optional[float] = None
         self.evaluation_finished = False
         self.num_evaluated_samples = 0
+        self.num_skipped_samples = 0
 
         # Whoever publishes the samples may end the evaluation, e.g. a closed-loop simulation at the
         # end of its scenario, which is the only way to learn about the end of an external sample source
@@ -859,8 +873,12 @@ class AutonomyEvaluation(Node):
             self.end_scene()
 
         results = self.evaluation_handler.finalize(complete=complete)
+        # samples the evaluation could not evaluate, e.g. without the transform between their frames
+        results["num_skipped_samples"] = self.num_skipped_samples
         aggregated_metrics = json.dumps(results["metrics"], indent=2, default=str)
         evaluated_samples = f"{results['num_samples']} evaluated sample(s) of {results['num_scenes']} scene(s)"
+        if self.num_skipped_samples:
+            evaluated_samples += f", skipping {self.num_skipped_samples} sample(s) that could not be evaluated"
         if complete:
             self.get_logger().info(f"Evaluation '{self.evaluation}' finished after {evaluated_samples}.")
         else:
@@ -973,6 +991,32 @@ class AutonomyEvaluation(Node):
         self.get_logger().info(response.message)
         return response
 
+    def skip_sample(self, sample_id: str, reason: Exception):
+        """Leaves out a sample that the evaluation cannot evaluate, e.g. without the transform between its frames
+
+        A live system, e.g. a simulation that has just started, may publish samples before
+        everything they need is available, which must not stop the evaluation of the following
+        samples. With the dataset as sample source, the scene of the skipped sample is dropped, so
+        that the scenes of the following samples stay matched with them, and the evaluation
+        continues with the next samples.
+
+        Args:
+            sample_id (str): sample that is left out
+            reason (Exception): why the evaluation cannot evaluate the sample
+        """
+        self.num_skipped_samples += 1
+        self.get_logger().warn(
+            f"Skipping sample '{sample_id}' ({self.num_skipped_samples} skipped so far): {reason}",
+            throttle_duration_sec=_SKIP_LOG_INTERVAL_S,
+        )
+        if self.requests_samples:
+            if self.scenes_awaiting_sample:
+                self.scenes_awaiting_sample.popleft()
+            else:
+                self.samples_awaiting_scene.append({})
+            self.evaluation_deadline = time.monotonic() + self.evaluation_timeout
+            self.advance_evaluation()
+
     def end_scene(self) -> Optional[str]:
         """Attributes the samples evaluated since the last scene ended to a scene of their own
 
@@ -987,6 +1031,19 @@ class AutonomyEvaluation(Node):
             entry["scene_id"] = scene_id
         self.samples_of_current_scene = []
         return scene_id
+
+    def completes_on_shutdown(self) -> bool:
+        """Decides whether the results written when the node is stopped are complete
+
+        Stopping an evaluation usually interrupts it, so that its results are incomplete. Only with
+        an external sample source and 'shutdown_completes', stopping is the regular end of the
+        evaluation, e.g. when an orchestration stops it together with the simulation at the end of
+        a scenario.
+
+        Returns:
+            bool: whether the results are complete
+        """
+        return not self.requests_samples and self.shutdown_completes
 
     def shutdown(self):
         """Stops the node, as there is nothing left to evaluate once the evaluation has finished
@@ -1034,7 +1091,11 @@ class AutonomyEvaluation(Node):
         self.get_logger().debug(f"Evaluating sample '{sample_id}'")
 
         messages = {**messages, **self.static_messages()}
-        result = self.evaluation_handler.record_sample(sample_id=sample_id, stamp=_to_nanoseconds(stamp) * 1e-9, **messages)
+        try:
+            result = self.evaluation_handler.record_sample(sample_id=sample_id, stamp=_to_nanoseconds(stamp) * 1e-9, **messages)
+        except ValueError as exception:
+            self.skip_sample(sample_id, exception)
+            return
         self.num_evaluated_samples += 1
         # attribute the sample to the scene the dataset published it from, which the dataset may
         # only report after the sample has been evaluated; with an external sample source, the
@@ -1082,7 +1143,7 @@ def main():
         # the results are written, which they would otherwise abort.
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         try:
-            node.finalize_evaluation(complete=False)
+            node.finalize_evaluation(complete=node.completes_on_shutdown())
         finally:
             node.destroy_node()
             rclpy.try_shutdown()

@@ -316,6 +316,7 @@ def _evaluating_node(requests_samples: bool) -> SimpleNamespace:
         scenes_awaiting_sample=deque(),
         samples_awaiting_scene=deque(),
         samples_of_current_scene=[],
+        num_skipped_samples=0,
         evaluation_timeout=60.0,
         evaluation_deadline=None,
         results_path="",
@@ -372,6 +373,38 @@ class TestEvaluateSample:
         assert node.num_advances == 1
         # the dataset reports the scene of the sample with the response to the request
         assert list(node.samples_awaiting_scene) == node.evaluation_handler.recorded_samples
+
+    def test_sample_that_cannot_be_evaluated_is_skipped(self):
+        """A sample without the transform between its frames, e.g. right after a simulation started, is left out."""
+        node = _evaluating_node(requests_samples=False)
+        node.skip_sample = partial(AutonomyEvaluation.skip_sample, node)
+
+        def fail(**_):
+            raise ValueError("no transform from 'odom' to 'map'")
+
+        node.evaluation_handler.record_sample = fail
+        AutonomyEvaluation.evaluate_sample(node, _NEXT_SCENE[0], _sample_messages(_NEXT_SCENE[0]))
+
+        assert (node.num_evaluated_samples, node.num_skipped_samples) == (0, 1)
+        assert "no transform from 'odom' to 'map'" in node.get_logger().messages[-1]
+
+    def test_skipped_sample_of_the_dataset_drops_its_scene(self):
+        """The scene of a skipped sample must not be attributed to the next sample."""
+        node = _evaluating_node(requests_samples=True)
+        node.skip_sample = partial(AutonomyEvaluation.skip_sample, node)
+        node.scenes_awaiting_sample.extend(["scene_a", "scene_b"])
+        record_sample = node.evaluation_handler.record_sample
+
+        def fail(**_):
+            raise ValueError("cannot be evaluated")
+
+        node.evaluation_handler.record_sample = fail
+        AutonomyEvaluation.evaluate_sample(node, _NEXT_SCENE[0], _sample_messages(_NEXT_SCENE[0]))
+        node.evaluation_handler.record_sample = record_sample
+        AutonomyEvaluation.evaluate_sample(node, _NEXT_SCENE[1], _sample_messages(_NEXT_SCENE[1]))
+
+        assert node.evaluation_handler.recorded_samples[0]["scene_id"] == "scene_b"
+        assert node.num_advances == 2
 
     def test_external_sample_source_leaves_publishing_samples_to_others(self):
         """With an external sample source, samples are evaluated as they arrive, without requesting further ones."""
@@ -749,6 +782,7 @@ def _node(num_evaluated_samples: int = 2, results_path: str = "/results/evaluati
         results_path=results_path,
         request_timer=SimpleNamespace(cancel=lambda: None),
         separates_scenes=False,
+        num_skipped_samples=0,
         get_logger=lambda logger=_FakeLogger(): logger,
     )
 
@@ -917,6 +951,20 @@ def _evaluated_samples(node: SimpleNamespace, num_samples: int) -> list:
     entries = [{"sample_id": str(index), "scene_id": None, "stamp": float(index), "metrics": {}} for index in range(num_samples)]
     node.samples_of_current_scene.extend(entries)
     return entries
+
+
+class TestShutdownCompletes:
+    """Tests deciding whether the results written when the node is stopped are complete."""
+
+    @pytest.mark.parametrize(
+        "requests_samples, shutdown_completes, complete",
+        [(False, True, True), (False, False, False), (True, True, False), (True, False, False)],
+    )
+    def test_only_an_external_evaluation_may_complete_on_shutdown(self, requests_samples, shutdown_completes, complete):
+        """An orchestration stopping a simulation and its evaluation at the end of a scenario completes the results."""
+        node = SimpleNamespace(requests_samples=requests_samples, shutdown_completes=shutdown_completes)
+
+        assert AutonomyEvaluation.completes_on_shutdown(node) is complete
 
 
 class TestNextScene:
