@@ -38,9 +38,7 @@ import rclpy.logging
 import tf2_perception_msgs  # noqa: F401, registers the tf2 transforms of perception_msgs/ObjectList and EgoData
 from autonomy_evaluation.evaluations.Metric import CONTEXT, Input, Sample
 from autonomy_evaluation.utils.Lanelet2Map import Lanelet2Map
-from perception_msgs_utils.checks import InvalidStateCovarianceSizeError
-from perception_msgs_utils.constants import CONTINUOUS_STATE_COVARIANCE_INVALID
-from perception_msgs_utils.convenience_state_getters import get_continuous_state_covariance_at
+from autonomy_evaluation.utils.PerceptionMsgsUtils import PerceptionMsgsUtils
 from perception_msgs_utils.state_getters import (
     get_acc_lat,
     get_acc_lon,
@@ -104,7 +102,7 @@ class EgoState:
         """Velocity in the frame of the position as ``(vx, vy)``, ``None`` if not set."""
         if self.vel_lon is None:
             return None
-        return _rotated(self.vel_lon, self.vel_lat or 0.0, self.yaw)
+        return PerceptionMsgsUtils.rotated(self.vel_lon, self.vel_lat or 0.0, self.yaw)
 
     @property
     def speed(self) -> Optional[float]:
@@ -160,7 +158,7 @@ def ego_state(sample: Sample) -> EgoState:
     def read() -> EgoState:
         ego_data = sample["ego_data"]
         yaw = get_yaw(ego_data)
-        x, y = _geometric_center(ego_data.state, get_x(ego_data), get_y(ego_data), yaw)
+        x, y = PerceptionMsgsUtils.geometric_center(ego_data.state, get_x(ego_data), get_y(ego_data), yaw)
         return EgoState(
             frame_id=ego_data.header.frame_id,
             x=x,
@@ -168,11 +166,11 @@ def ego_state(sample: Sample) -> EgoState:
             yaw=yaw,
             length=float(ego_data.length),
             width=float(ego_data.width),
-            vel_lon=_entry(ego_data, get_vel_lon, index_vel_lon),
-            vel_lat=_entry(ego_data, get_vel_lat, index_vel_lat),
-            acc_lon=_entry(ego_data, get_acc_lon, index_acc_lon),
-            acc_lat=_entry(ego_data, get_acc_lat, index_acc_lat),
-            yaw_rate=_entry(ego_data, get_yaw_rate, index_yaw_rate),
+            vel_lon=PerceptionMsgsUtils.entry(ego_data, get_vel_lon, index_vel_lon),
+            vel_lat=PerceptionMsgsUtils.entry(ego_data, get_vel_lat, index_vel_lat),
+            acc_lon=PerceptionMsgsUtils.entry(ego_data, get_acc_lon, index_acc_lon),
+            acc_lat=PerceptionMsgsUtils.entry(ego_data, get_acc_lat, index_acc_lat),
+            yaw_rate=PerceptionMsgsUtils.entry(ego_data, get_yaw_rate, index_yaw_rate),
         )
 
     return sample.memo("ego_state", read)
@@ -202,13 +200,13 @@ def object_states(sample: Sample) -> ObjectStates:
         fields = {name: np.zeros(len(objects)) for name in ("x", "y", "yaw", "length", "width", "vx", "vy")}
         for index, obj in enumerate(objects):
             yaw = get_yaw(obj)
-            fields["x"][index], fields["y"][index] = _geometric_center(obj.state, get_x(obj), get_y(obj), yaw)
+            fields["x"][index], fields["y"][index] = PerceptionMsgsUtils.geometric_center(obj.state, get_x(obj), get_y(obj), yaw)
             fields["yaw"][index] = yaw
             fields["length"][index] = _extent(obj, get_length)
             fields["width"][index] = _extent(obj, get_width)
-            vel_lon = _entry(obj, get_vel_lon, index_vel_lon) or 0.0
-            vel_lat = _entry(obj, get_vel_lat, index_vel_lat) or 0.0
-            fields["vx"][index], fields["vy"][index] = _rotated(vel_lon, vel_lat, yaw)
+            vel_lon = PerceptionMsgsUtils.entry(obj, get_vel_lon, index_vel_lon) or 0.0
+            vel_lat = PerceptionMsgsUtils.entry(obj, get_vel_lat, index_vel_lat) or 0.0
+            fields["vx"][index], fields["vy"][index] = PerceptionMsgsUtils.rotated(vel_lon, vel_lat, yaw)
         return ObjectStates(
             ids=np.array([obj.id for obj in objects], dtype=np.uint64),
             objects=objects,
@@ -261,33 +259,6 @@ def to_ego_frame(ego: EgoState, x: np.ndarray, y: np.ndarray) -> Tuple[np.ndarra
     dx, dy = np.asarray(x) - ego.x, np.asarray(y) - ego.y
     cos, sin = math.cos(ego.yaw), math.sin(ego.yaw)
     return cos * dx + sin * dy, -sin * dx + cos * dy
-
-
-def _rotated(along: float, across: float, yaw: float) -> Tuple[float, float]:
-    """Rotate a vector given along and across a heading into the frame the heading is given in."""
-    return along * math.cos(yaw) - across * math.sin(yaw), along * math.sin(yaw) + across * math.cos(yaw)
-
-
-def _geometric_center(state: Any, x: float, y: float, yaw: float) -> Tuple[float, float]:
-    """Move the BEV position of the reference point of a state to the geometric center."""
-    translation = state.reference_point.translation_to_geometric_center
-    dx, dy = _rotated(translation.x, translation.y, yaw)
-    return x + dx, y + dy
-
-
-def _entry(obj: Any, getter: Callable[[Any], float], index: Callable[[int], int]) -> Optional[float]:
-    """Read a state entry, ``None`` if the motion model has no such entry or ``perception_msgs`` marks it as not set."""
-    try:
-        value = float(getter(obj))
-    except UnknownStateEntryError:
-        return None
-    try:
-        entry = index(obj.state.model_id)
-        if get_continuous_state_covariance_at(obj, entry, entry) == CONTINUOUS_STATE_COVARIANCE_INVALID:
-            return None
-    except InvalidStateCovarianceSizeError:
-        pass  # a state without covariance has all its entries set
-    return value
 
 
 def _extent(obj: Any, getter: Callable[[Any], float]) -> float:
