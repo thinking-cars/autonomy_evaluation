@@ -127,6 +127,20 @@ def _standing_car_ahead(gap: float, num_samples: int = 10, ego_speed: float = 10
     return [(index * _PERIOD, {"vel_lon": ego_speed}, [road_user(1, gap + 4.0, 0.0)]) for index in range(num_samples)]
 
 
+def test_collision_that_starts_touching_is_classified_by_its_first_overlap():
+    """Running into a slower car whose rear the front of the ego vehicle touches first is a front collision."""
+    ego, other = {"yaw": 0.0, "vel_lon": 10.0}, {"yaw": 0.0, "vel_lon": 5.0}
+    samples = [
+        (0.0, {"x": 6.0, **ego}, [road_user(1, 10.0, 0.0, **other)]),  # front at 8 m touches the rear at 8 m
+        (0.1, {"x": 7.0, **ego}, [road_user(1, 10.5, 0.0, **other)]),  # overlapping by 0.5 m
+    ]
+
+    collision = _evaluate(samples, metrics=["criticality.collision"])["collision"]
+
+    assert collision["types"]["active_front"] == 1
+    assert (collision["_value_"], collision["at_fault"]) == (1, 1)
+
+
 class TestTimeToCollision:
     """Tests the time to collision of the ego vehicle and its exposure to small ones."""
 

@@ -86,7 +86,8 @@ class Collision(_LaneAwareCriticalityMetric):
 
     An overlap with the same road user over consecutive samples is one
     collision. Each collision is classified at its first sample like the
-    collision types of nuPlan:
+    collision types of nuPlan, by the side of the first sample at which the
+    footprints overlap by an area if they only touch at first:
 
     - ``stopped_ego``: the ego vehicle stands still, so it is not at fault.
     - ``stopped_object``: the other road user stands still, so the ego vehicle
@@ -139,18 +140,35 @@ class Collision(_LaneAwareCriticalityMetric):
         types = {collision_type: 0 for collision_type in COLLISION_TYPES}
         faults = {True: 0, False: 0, None: 0}
         relative_speeds: List[float] = []
+
+        def count(collision: Dict[str, Any]) -> None:
+            collision_type = self._collision_type(collision)
+            types[collision_type] += 1
+            at_fault = COLLISION_TYPES[collision_type]
+            faults[collision["ego_off_lane"] if at_fault is None else at_fault] += 1
+            if collision["relative_speed"] is not None:
+                relative_speeds.append(collision["relative_speed"])
+
         for sequence in aggregation.sequences():
             colliding: set = set()
+            # collisions whose footprints only touched so far, which are classified by the side of their first sample
+            # with an overlapping area, or as they are once they end without
+            touching: Dict[int, Dict[str, Any]] = {}
             for record in aggregation.records(self.name, sequence):
-                for collision in record:
-                    if collision["id"] not in colliding:
-                        collision_type = self._collision_type(collision)
-                        types[collision_type] += 1
-                        at_fault = COLLISION_TYPES[collision_type]
-                        faults[collision["ego_off_lane"] if at_fault is None else at_fault] += 1
-                        if collision["relative_speed"] is not None:
-                            relative_speeds.append(collision["relative_speed"])
-                colliding = {collision["id"] for collision in record}
+                current = {collision["id"]: collision for collision in record}
+                for object_id in [object_id for object_id in touching if object_id not in current]:
+                    count(touching.pop(object_id))
+                for object_id, collision in current.items():
+                    if object_id in touching and collision["side"] is not None:
+                        count({**touching.pop(object_id), "side": collision["side"]})
+                    elif object_id not in colliding:
+                        if collision["side"] is None:
+                            touching[object_id] = collision
+                        else:
+                            count(collision)
+                colliding = set(current)
+            for collision in touching.values():
+                count(collision)
         return {
             "_value_": sum(types.values()),
             "at_fault": faults[True],
