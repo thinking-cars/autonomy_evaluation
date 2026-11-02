@@ -132,34 +132,68 @@ The TP errors are measured with a maximum match distance of 2 meters; their mean
 
 ### Closed-Loop
 
-Evaluates the ego vehicle a system under test drives, e.g. a planner in a closed-loop simulation, by its behavior over the whole run: its comfort, i.e. how smoothly it drives.
+Evaluates the ego vehicle a system under test drives, e.g. a planner in a closed-loop simulation, by its behavior over the whole run: its criticality towards the other road users, i.e. how close it comes to colliding with them or does, and its comfort, i.e. how smoothly it drives. The criticality metrics follow the definitions of the review of [Westhofen et al. (2023), Criticality Metrics for Automated Driving](https://doi.org/10.1007/s11831-022-09788-7), the classification of collisions follows [nuPlan](https://nuplan-devkit.readthedocs.io/en/latest/metrics_description.html).
 
 | Topic | Type | Role | Description |
 | --- | --- | --- | --- |
 | `ego_data` | `perception_msgs/EgoData` | evaluated | state of the ego vehicle |
+| `objects` | `perception_msgs/ObjectList` | context | other road users, only read by the `criticality` metrics; objects in another frame than `ego_data` are transformed into its frame with the transforms published on `/tf` and `/tf_static` |
 
 The samples usually come from a recorded simulation run, which [autonomy_datasets](https://github.com/thinking-cars/autonomy_datasets) replays with the dataset as sample source, so that they are attributed to the scenes of the recordings and the evaluation ends with the last sample. With `sample_source:=external`, e.g. evaluating a running simulation live, the run ends once the simulation calls the `~/finish` service of the node. Every metric over time is computed per contiguous sequence of samples (see [Sequences of samples](#sequences-of-samples)), and gaps of missing samples are reported under `sampling`.
 
 Metrics are computed based on the following assumptions:
 
-- **Footprints**: the ego vehicle is a rectangle of the `length` and `width` of its `EgoData` around its geometric center, which is the position of its state moved by the `translation_to_geometric_center` of its reference point, rotated by its yaw.
+- **Footprints**: every road user is a rectangle on the ground plane around its geometric center, which is the position of its state moved by the `translation_to_geometric_center` of its reference point, rotated by its yaw. The ego vehicle has the `length` and `width` of its `EgoData`, an object the extent of its state; an object whose state model has no extent is a point.
+- **Road users**: all objects are considered, whatever their class. A simulation listing the ego vehicle among the objects names its ID in `ego_object_id`, so that it is left out of them.
+- **Velocities** are given along the heading and across it, as the `perception_msgs` state models define them, and are velocities over ground. An object whose velocity is not set stands still; the ego vehicle without velocity has no time to collision and no time headway.
 - **Set entries**: a state entry that `perception_msgs` marks as not set, i.e. `CONTINUOUS_STATE_COVARIANCE_INVALID` on the diagonal of the state covariance, is unavailable. A state without covariance has all its entries set.
 - **Derived quantities**: a quantity the state of the ego vehicle does not set is derived from consecutive samples by finite differences: the yaw rate from the yaw, the accelerations from the velocities in the rotating frame of the vehicle, i.e. `a_lon = d(v_lon)/dt - v_lat·ω` and `a_lat = d(v_lat)/dt + v_lon·ω`. The jerk is always derived from the accelerations. Derived quantities depend on the sampling rate: at a low rate, e.g. the 2 Hz key frames of a dataset, peaks are smoothed out.
+- **Collisions**: the ego vehicle collides with a road user while their footprints overlap; an overlap over consecutive samples is one collision. Each collision is classified at its first sample like the collision types of nuPlan: `stopped_ego` if the ego vehicle stands still (not at fault), else `stopped_object` if the other road user stands still (at fault), else by the side of the ego vehicle closest to the overlap: `active_front` (at fault), `active_rear` (not at fault) or `active_lateral`. Whether the ego vehicle is at fault for a lateral collision depends on which road user left its lane, so it stays undetermined without the lanes.
+- **Time to collision** (TTC): both the ego vehicle and every road user keep their velocity and yaw; the TTC to a road user is the time until their footprints overlap, stepped through the horizon at `time_step` and refined by bisection. The TTC of the ego vehicle at a sample is the smallest TTC to any road user within the horizon. The time exposed (TET) and the time integrated (TIT) follow [Minderhoud and Bovy (2001)](https://doi.org/10.1016/S0001-4575(00)00019-1) for the ego vehicle: TET is the time its TTC stays below `exposure_threshold` (TTC*), TIT integrates `TTC* − TTC` over that time. Each sample counts for the sampling period of its sequence. `exposure_threshold` is a parameter of these metrics, not a limit the ego vehicle passes or fails.
+- **Time headway** (THW): the road user the ego vehicle follows is the closest one ahead whose geometric center lies within `corridor_width` around the path ahead of the ego vehicle, which continues its current yaw rate as a circle, or straight if its yaw rate is not set. The THW is the gap along the path from the front of the ego vehicle to the rear of that road user, zero if they overlap, divided by the longitudinal velocity of the ego vehicle, which must be at least `min_speed`. Without lanes, the corridor is a heuristic: in a bend whose curvature changes, a road user in the neighboring lane may be followed.
 
 #### Configuration
 
 | Entry | Default | Description |
 | --- | --- | --- |
-| `metrics` | `[comfort]` | selected metrics: a group, e.g. `comfort`, or single metrics of a group, e.g. `comfort.jerk` |
+| `metrics` | `[criticality, comfort]` | selected metrics: a group, e.g. `comfort`, or single metrics of a group, e.g. `criticality.ttc` |
+| `ego_object_id` | `-1` | ID of the ego vehicle among the objects, which is left out of them; `-1` if the objects do not contain it |
+| `criticality.collision.standstill_speed` | `0.1` | speed in `m/s` below which a road user stands still |
+| `criticality.ttc.horizon` | `5.0` | seconds the motion is extrapolated for; longer TTCs are none |
+| `criticality.ttc.time_step` | `0.1` | seconds between the extrapolated positions, which are refined by bisection |
+| `criticality.ttc.exposure_threshold` | `3.0` | TTC* in seconds below which the ego vehicle is exposed for TET and TIT |
+| `criticality.thw.corridor_width` | `3.5` | width in meters of the corridor along the path ahead of the ego vehicle |
+| `criticality.thw.min_speed` | `0.5` | speed in `m/s` of the ego vehicle below which it has no time headway |
 | `max_sample_interval` | `1.0` | seconds between two consecutive samples beyond which they belong to different sequences |
+
+```yaml
+/**:
+  ros__parameters:
+    closed_loop:
+      metrics: [criticality, comfort.jerk]  # all criticality metrics, but the jerk only of the comfort metrics
+      ego_object_id: 0  # the simulation lists the ego vehicle as object 0
+      criticality:
+        ttc:
+          exposure_threshold: 1.5
+```
 
 <details>
 <summary>Output metrics</summary>
 
-The results hold the `metrics` over all evaluated samples and, under `scenes`, those of each scene, grouped into `comfort`. Each metric holds its aggregated value under `_value_`, next to its sub-metrics. A value that cannot be computed, e.g. a jerk of single samples, is `null`.
+The results hold the `metrics` over all evaluated samples and, under `scenes`, those of each scene, grouped into `criticality` and `comfort`. Each metric holds its aggregated value under `_value_`, next to its sub-metrics. A value that cannot be computed, e.g. a jerk of single samples, is `null`. The evaluation reports no overall value, so the top-level `_value_` is `null`.
 
 | Metric | Description |
 | - | - |
+| `criticality.collision._value_` | Number of collisions of the ego vehicle. |
+| `criticality.collision.{at_fault,not_at_fault,undetermined}` | Number of collisions the ego vehicle is at fault for, is not at fault for, and of which this is undetermined without lanes. |
+| `criticality.collision.types.{type}` | Number of collisions per type: `active_front`, `active_rear`, `active_lateral`, `stopped_ego`, `stopped_object`. |
+| `criticality.collision.max_relative_speed` | Largest relative speed of the colliding road users at the first sample of a collision in `m/s`. |
+| `criticality.ttc._value_` | Smallest time to collision of the ego vehicle in seconds, `null` if no road user ever collides within the horizon. |
+| `criticality.ttc.share` | Share of the samples with velocity of the ego vehicle that have a time to collision within the horizon. |
+| `criticality.ttc.time_exposed` | Time exposed (TET) in seconds: time the TTC of the ego vehicle stays below `exposure_threshold`. |
+| `criticality.ttc.time_integrated` | Time integrated (TIT) in `s²`: `TTC* − TTC` integrated over the time exposed. |
+| `criticality.thw._value_`, `criticality.thw.mean` | Smallest and mean time headway of the ego vehicle in seconds over the samples in which it follows a road user. |
+| `criticality.thw.share` | Share of the samples in which the ego vehicle follows a road user. |
 | `comfort.acceleration._value_` | Largest magnitude of the acceleration of the ego vehicle in `m/s²`. |
 | `comfort.acceleration.longitudinal.{max,min,rms}` | Strongest longitudinal acceleration, strongest deceleration (negative) and root mean square of the longitudinal acceleration in `m/s²`. |
 | `comfort.acceleration.lateral.{max_abs,rms}` | Largest absolute and root mean square lateral acceleration in `m/s²`. |

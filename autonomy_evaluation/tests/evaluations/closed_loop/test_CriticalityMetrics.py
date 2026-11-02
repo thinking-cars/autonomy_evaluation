@@ -1,0 +1,233 @@
+# Copyright Thinking Cars GmbH
+# SPDX-License-Identifier: Apache-2.0
+
+"""Tests for the criticality metrics of the closed-loop evaluation: collision, time to collision and time headway.
+
+Cars of 4 m length and 2 m width drive scenarios simple enough to compute the expected values by
+hand, e.g. the ego vehicle approaching a standing car at 10 m/s or following a car around a bend.
+"""
+
+from __future__ import annotations
+
+import math
+
+import pytest
+from autonomy_evaluation.evaluations.closed_loop.ClosedLoop import ClosedLoop
+from tests.evaluations.closed_loop.messages import ego_data, object_list, road_user
+
+_PERIOD = 0.1
+
+
+def _evaluate(samples, metrics=None, config=None, scene_ids=None) -> dict:
+    """Record ``(stamp, ego_data keyword arguments, road users)`` samples and aggregate them over all samples."""
+    evaluation = ClosedLoop()
+    evaluation.configure({"metrics": metrics or ["criticality"], **(config or {})})
+    for index, (stamp, ego, road_users) in enumerate(samples):
+        evaluation.record_sample(
+            sample_id=str(index),
+            scene_id=scene_ids[index] if scene_ids else None,
+            stamp=stamp,
+            ego_data=ego_data(stamp=stamp, **ego),
+            objects=object_list(road_users, stamp=stamp),
+        )
+    return evaluation.finalize()["metrics"]["criticality"]
+
+
+def _collision(ego_x, ego_speed, other_x, other_y=0.0, other_yaw=0.0, other_speed=0.0) -> list:
+    """Two samples, 1 s apart, of an ego vehicle on the x axis approaching another road user and overlapping it in the second."""
+    ego = {"yaw": 0.0, "vel_lon": ego_speed}
+    other = {"yaw": other_yaw, "vel_lon": other_speed}
+    other_before = (other_x - other_speed * math.cos(other_yaw), other_y - other_speed * math.sin(other_yaw))
+    return [
+        (0.0, {"x": ego_x - ego_speed, **ego}, [road_user(1, *other_before, **other)]),
+        (1.0, {"x": ego_x, **ego}, [road_user(1, other_x, other_y, **other)]),
+    ]
+
+
+class TestCollision:
+    """Tests detecting and classifying the collisions of the ego vehicle."""
+
+    @pytest.mark.parametrize(
+        "samples, collision_type, at_fault",
+        [
+            # driving into a standing car
+            (_collision(ego_x=7.0, ego_speed=10.0, other_x=10.0), "stopped_object", "at_fault"),
+            # driving into a slower car ahead
+            (_collision(ego_x=7.0, ego_speed=10.0, other_x=10.0, other_speed=5.0), "active_front", "at_fault"),
+            # hit from behind while waiting
+            (_collision(ego_x=0.0, ego_speed=0.0, other_x=-3.0, other_speed=5.0), "stopped_ego", "not_at_fault"),
+            # hit from behind by a faster car
+            (_collision(ego_x=0.0, ego_speed=5.0, other_x=-3.0, other_speed=10.0), "active_rear", "not_at_fault"),
+            # hit at the left side by a car crossing from the left
+            (
+                _collision(ego_x=0.0, ego_speed=10.0, other_x=0.0, other_y=2.5, other_yaw=-math.pi / 2.0, other_speed=5.0),
+                "active_lateral",
+                "undetermined",
+            ),
+        ],
+    )
+    def test_classifies_collisions_like_nuplan(self, samples, collision_type, at_fault):
+        """Whether the ego vehicle is at fault follows from who stood still and which side was hit."""
+        collision = _evaluate(samples, metrics=["criticality.collision"])["collision"]
+
+        assert collision["_value_"] == 1
+        assert collision["types"][collision_type] == 1
+        assert collision[at_fault] == 1
+
+    def test_overlap_over_consecutive_samples_is_one_collision(self):
+        """A collision lasts as long as the road users overlap."""
+        overlapping = [(index * _PERIOD, {"vel_lon": 1.0}, [road_user(1, 3.0, 0.0)]) for index in range(3)]
+
+        assert _evaluate(overlapping)["collision"]["_value_"] == 1
+
+    def test_overlapping_again_is_another_collision(self):
+        """Road users that separate and overlap again collide twice."""
+        positions = [3.0, 10.0, 3.0]
+        samples = [(index * _PERIOD, {"vel_lon": 1.0}, [road_user(1, x, 0.0)]) for index, x in enumerate(positions)]
+
+        assert _evaluate(samples)["collision"]["_value_"] == 2
+
+    def test_collision_continuing_into_a_new_scene_counts_again(self):
+        """Scenes are evaluated on their own, so an overlap at the start of a scene is a collision of that scene."""
+        samples = [(index * _PERIOD, {"vel_lon": 1.0}, [road_user(1, 3.0, 0.0)]) for index in range(2)]
+
+        assert _evaluate(samples, scene_ids=["a", "b"])["collision"]["_value_"] == 2
+
+    def test_reports_the_relative_speed_at_impact(self):
+        """The severity of a collision grows with the relative speed of the road users."""
+        collision = _evaluate(_collision(ego_x=7.0, ego_speed=10.0, other_x=10.0, other_speed=4.0))["collision"]
+
+        assert collision["max_relative_speed"] == pytest.approx(6.0)
+
+    def test_no_collision(self):
+        """Road users that keep their distance never collide."""
+        collision = _evaluate([(0.0, {"vel_lon": 10.0}, [road_user(1, 20.0, 0.0)])])["collision"]
+
+        assert collision == {
+            "_value_": 0,
+            "at_fault": 0,
+            "not_at_fault": 0,
+            "undetermined": 0,
+            "types": {"active_front": 0, "active_rear": 0, "active_lateral": 0, "stopped_ego": 0, "stopped_object": 0},
+            "max_relative_speed": None,
+        }
+
+    def test_ego_vehicle_among_the_objects_is_no_collision(self):
+        """A simulation listing the ego vehicle among the objects does not make it collide with itself."""
+        samples = [(0.0, {"vel_lon": 10.0}, [road_user(0, 0.0, 0.0, vel_lon=10.0)])]
+
+        assert _evaluate(samples)["collision"]["_value_"] == 1
+        assert _evaluate(samples, config={"ego_object_id": 0})["collision"]["_value_"] == 0
+
+
+def _standing_car_ahead(gap: float, num_samples: int = 10, ego_speed: float = 10.0) -> list:
+    """Samples of the ego vehicle approaching a standing car ahead, the gap between them kept constant."""
+    return [(index * _PERIOD, {"vel_lon": ego_speed}, [road_user(1, gap + 4.0, 0.0)]) for index in range(num_samples)]
+
+
+class TestTimeToCollision:
+    """Tests the time to collision of the ego vehicle and its exposure to small ones."""
+
+    def test_time_to_collision_with_a_standing_car(self):
+        """A standing car 20 m ahead is reached at 10 m/s after 2 s."""
+        assert _evaluate(_standing_car_ahead(gap=20.0))["ttc"]["_value_"] == pytest.approx(2.0, abs=1e-3)
+
+    def test_time_exposed_and_integrated(self):
+        """A TTC of 2 s for 1 s is exposed below 3 s for 1 s, integrating to (3 s - 2 s) · 1 s."""
+        ttc = _evaluate(_standing_car_ahead(gap=20.0))["ttc"]
+
+        assert ttc["share"] == 1.0
+        assert ttc["time_exposed"] == pytest.approx(1.0)
+        assert ttc["time_integrated"] == pytest.approx(1.0, abs=1e-2)
+
+    def test_exposure_threshold_is_configurable(self):
+        """Below a TTC* of 1.5 s, a TTC of 2 s is no exposure."""
+        ttc = _evaluate(_standing_car_ahead(gap=20.0), config={"criticality": {"ttc": {"exposure_threshold": 1.5}}})["ttc"]
+
+        assert ttc["time_exposed"] == 0.0
+        assert ttc["time_integrated"] == 0.0
+
+    def test_no_time_to_collision_beyond_the_horizon(self):
+        """A car reached after 4.6 s has no TTC within a horizon of 3 s."""
+        samples = _standing_car_ahead(gap=46.0)
+
+        assert _evaluate(samples)["ttc"]["_value_"] == pytest.approx(4.6, abs=1e-3)
+        ttc = _evaluate(samples, config={"criticality": {"ttc": {"horizon": 3.0}}})["ttc"]
+        assert ttc["_value_"] is None
+        assert ttc["share"] == 0.0
+
+    def test_ego_vehicle_without_velocity_has_no_time_to_collision(self):
+        """Without its velocity, the motion of the ego vehicle cannot be extrapolated."""
+        ttc = _evaluate([(0.0, {}, [road_user(1, 10.0, 0.0)])])["ttc"]
+
+        assert ttc == {"_value_": None, "share": None, "time_exposed": 0.0, "time_integrated": 0.0}
+
+
+class TestTimeHeadway:
+    """Tests the time headway of the ego vehicle to the road user it follows."""
+
+    def test_time_headway_to_the_car_ahead(self):
+        """A car 40 m ahead of the front of the ego vehicle driving 20 m/s is 2 s ahead.
+
+        A car in the neighboring lane and a car behind are not followed.
+        """
+        road_users = [road_user(1, 44.0, 0.0, vel_lon=20.0), road_user(2, 10.0, 3.5), road_user(3, -10.0, 0.0)]
+
+        thw = _evaluate([(0.0, {"vel_lon": 20.0, "yaw_rate": 0.0}, road_users)])["thw"]
+
+        assert thw == {"_value_": pytest.approx(2.0), "mean": pytest.approx(2.0), "share": 1.0}
+
+    def test_follows_the_car_ahead_around_a_bend(self):
+        """In a bend of 100 m radius, the car 50 m ahead along the bend lies 12 m to the left, but is followed."""
+        bend_angle = 0.5
+        ahead = road_user(1, 100.0 * math.sin(bend_angle), 100.0 * (1.0 - math.cos(bend_angle)), yaw=bend_angle)
+
+        straight = _evaluate([(0.0, {"vel_lon": 20.0}, [ahead])])["thw"]
+        bend = _evaluate([(0.0, {"vel_lon": 20.0, "yaw_rate": 0.2}, [ahead])])["thw"]
+
+        assert straight["_value_"] is None
+        assert bend["_value_"] == pytest.approx((50.0 - 2.0 - 2.0) / 20.0)
+
+    def test_follows_the_closest_car_ahead(self):
+        """Of two cars ahead in the lane, the closer one is followed."""
+        road_users = [road_user(1, 64.0, 0.0), road_user(2, 24.0, 0.0)]
+
+        assert _evaluate([(0.0, {"vel_lon": 10.0}, road_users)])["thw"]["_value_"] == pytest.approx(2.0)
+
+    def test_standing_ego_vehicle_has_no_time_headway(self):
+        """An ego vehicle that hardly moves would take forever to reach any car ahead."""
+        thw = _evaluate([(0.0, {"vel_lon": 0.2}, [road_user(1, 10.0, 0.0)])])["thw"]
+
+        assert thw == {"_value_": None, "mean": None, "share": 0.0}
+
+    def test_mean_and_share_over_the_samples_following_a_car(self):
+        """The mean is taken over the samples in which the ego vehicle follows a car, the share over all."""
+        samples = [
+            (0.0, {"vel_lon": 10.0}, [road_user(1, 14.0, 0.0)]),
+            (_PERIOD, {"vel_lon": 10.0}, [road_user(1, 34.0, 0.0)]),
+            (2 * _PERIOD, {"vel_lon": 10.0}, []),
+        ]
+
+        thw = _evaluate(samples)["thw"]
+
+        assert thw["_value_"] == pytest.approx(1.0)
+        assert thw["mean"] == pytest.approx(2.0)
+        assert thw["share"] == pytest.approx(2.0 / 3.0)
+
+
+class TestCriticalitySelection:
+    """Tests selecting the criticality metrics."""
+
+    def test_criticality_reads_the_objects_as_context(self):
+        """The other road users are needed to evaluate the ego vehicle, but not evaluated themselves."""
+        evaluation = ClosedLoop()
+        evaluation.configure({"metrics": ["criticality"]})
+
+        assert {name: declared.role for name, declared in evaluation.inputs().items()} == {
+            "ego_data": "evaluated",
+            "objects": "context",
+        }
+
+    def test_all_groups_are_selected_by_default(self):
+        """By default, the closed-loop evaluation computes its criticality and its comfort."""
+        assert ClosedLoop().config["metrics"] == ["criticality", "comfort"]

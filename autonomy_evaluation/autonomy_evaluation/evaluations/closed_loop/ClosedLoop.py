@@ -4,8 +4,8 @@
 """Closed-loop evaluation of the driving behavior of the ego vehicle.
 
 Evaluates the ego vehicle a system under test drives, e.g. a planner in a
-closed-loop simulation, by its behavior over the whole run: its comfort, i.e.
-how smoothly it drives, and its criticality towards the other road users.
+closed-loop simulation, by its behavior over the whole run: its criticality
+towards the other road users and its comfort, i.e. how smoothly it drives.
 
 The evaluation reads the ``ego_data`` of the ego vehicle (evaluated) and, for
 the metrics that involve other road users, the ``objects`` around it
@@ -16,6 +16,9 @@ the run ends when its publisher calls the ``~/finish`` service of the node.
 
 Metrics, grouped and selectable via ``metrics``:
 
+- ``criticality``: ``collision``, ``ttc`` and ``thw`` of the ego vehicle
+  towards the other road users
+  (:mod:`~autonomy_evaluation.evaluations.closed_loop.CriticalityMetrics`).
 - ``comfort``: ``acceleration``, ``jerk`` and ``yaw_rate`` of the ego vehicle
   (:mod:`~autonomy_evaluation.evaluations.closed_loop.ComfortMetrics`).
 
@@ -25,15 +28,16 @@ Every metric over time is computed per contiguous sequence of samples, see
 
 from __future__ import annotations
 
-from typing import Any, List
+from typing import Any, Dict, List
 
 from autonomy_evaluation.evaluations.closed_loop.ComfortMetrics import Acceleration, EgoMotion, Jerk, YawRate
+from autonomy_evaluation.evaluations.closed_loop.CriticalityMetrics import Collision, TimeHeadway, TimeToCollision
 from autonomy_evaluation.evaluations.Evaluation import Evaluation
 from autonomy_evaluation.evaluations.Metric import MetricGroup
 
 
 class ClosedLoop(Evaluation):
-    """Closed-loop evaluation of the comfort of the ego vehicle.
+    """Closed-loop evaluation of the criticality and the comfort of the ego vehicle.
 
     See the module docstring for the metrics and their inputs.
     """
@@ -47,12 +51,24 @@ class ClosedLoop(Evaluation):
         """Name the evaluation."""
         super().__init__(
             name="closed_loop",
-            description="Driving behavior of the ego vehicle a system under test drives in closed loop.",
+            description="Driving behavior of the ego vehicle a system under test drives in closed loop: its criticality "
+            "towards other road users and its comfort.",
         )
 
     def metrics(self) -> List[Any]:
-        """Compose the evaluation of the comfort metrics, building on the motion of the ego vehicle."""
+        """Compose the evaluation of the criticality and the comfort metrics."""
         return [
             EgoMotion(),
+            MetricGroup("criticality", [Collision(), TimeToCollision(), TimeHeadway()]),
             MetricGroup("comfort", [Acceleration(), Jerk(), YawRate()]),
         ]
+
+    def default_config(self) -> Dict[str, Any]:
+        """Configure how the other road users are read, shared by all metrics involving them.
+
+        Returns:
+            ``ego_object_id``: ID of the ego vehicle among the objects, which
+            some simulations list, and which is left out of them; ``-1`` if
+            the objects do not contain the ego vehicle.
+        """
+        return {"ego_object_id": -1}
