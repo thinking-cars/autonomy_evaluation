@@ -45,11 +45,13 @@ def _client(load=None) -> SimpleNamespace:
         loaded=loaded,
         map=None,
         values={},
+        loaded_values=None,
         pending_request=None,
         request_timer=SimpleNamespace(cancel=lambda: None),
         node=SimpleNamespace(get_logger=lambda logger=_FakeLogger(): logger),
     )
     client.update = lambda values: Lanelet2MapClient.update(client, values)
+    client.known = lambda: Lanelet2MapClient.known(client)
     return client
 
 
@@ -95,6 +97,30 @@ class TestLanelet2MapClient:
         Lanelet2MapClient.parameter_event_callback(client, _event("/datasets", map_contents="<osm>next</osm>", origin_lat=48.1))
 
         assert client.loaded[-1] == ("<osm>next</osm>", 48.1, 6.06, "map")
+
+    def test_loads_the_map_once_a_starting_map_server_declared_all_its_parameters(self):
+        """A map server starting after the client declares its parameters one by one, which load the map once."""
+        client = _client()
+
+        for name in MAP_PARAMETERS:
+            Lanelet2MapClient.parameter_event_callback(client, _event("/datasets", **{name: _MAP[name]}))
+
+        assert client.loaded == [("<osm/>", 50.78, 6.06, "map")]
+
+    def test_requests_the_parameters_a_map_server_has_not_announced(self):
+        """A map server that announced only some map parameters is asked for all of them."""
+        client = _client()
+        requested = []
+        client.parameter_client = SimpleNamespace(
+            services_are_ready=lambda: True,
+            get_parameters=lambda names: requested.append(names) or SimpleNamespace(add_done_callback=lambda callback: None),
+        )
+        client.parameters_received = None
+        Lanelet2MapClient.parameter_event_callback(client, _event("/datasets", map_contents="<osm/>"))
+
+        Lanelet2MapClient.request_parameters(client)
+
+        assert requested == [list(MAP_PARAMETERS)]
 
     def test_ignores_the_parameters_of_other_nodes(self):
         """Only the map server holds the map."""

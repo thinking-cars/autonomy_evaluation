@@ -10,7 +10,9 @@ requests these parameters once the map server is available, and follows every
 change of them announced on ``/parameter_events``, e.g. when a dataset
 continues with a scene recorded elsewhere. ``autonomy_datasets`` changes the map
 before it publishes the first sample of a scene, so the map of a scene is loaded
-before the samples of the scene are evaluated.
+before the samples of the scene are evaluated. A map server that starts after
+the client declares its parameters one after another, so the map is only loaded
+once all of them are known.
 """
 
 from __future__ import annotations
@@ -57,6 +59,8 @@ class Lanelet2MapClient:
         self.load = load
         self.map: Optional[Lanelet2Map] = None
         self.values: Dict[str, Any] = {}
+        # values of the map parameters the current map was loaded from
+        self.loaded_values: Optional[Dict[str, Any]] = None
         self.pending_request: Optional[Future] = None
         self.parameter_client = AsyncParameterClient(node, self.server)
         self.parameter_event_subscription = self.parameter_client.on_parameter_event(self.parameter_event_callback)
@@ -67,7 +71,7 @@ class Lanelet2MapClient:
 
     def request_parameters(self):
         """Requests the map parameters once the map server is available, until they have been received"""
-        if self.values or self.pending_request is not None:
+        if self.pending_request is not None or self.known():
             return
         if not self.parameter_client.services_are_ready():
             self.node.get_logger().warn(
@@ -112,18 +116,24 @@ class Lanelet2MapClient:
         if values:
             self.update(values)
 
+    def known(self) -> bool:
+        """Reports whether the values of all map parameters are known"""
+        return all(name in self.values for name in MAP_PARAMETERS)
+
     def update(self, values: Dict[str, Any]):
-        """Loads the map anew if its parameters changed
+        """Loads the map anew if its parameters changed, once all of them are known
 
         Args:
             values (Dict[str, Any]): new values of map parameters by name, None for an unset parameter
         """
-        changed = any(self.values.get(name) != value for name, value in values.items()) or not self.values
         self.values.update(values)
+        if not self.known():
+            return
         if self.request_timer is not None:
             self.request_timer.cancel()
-        if not changed:
+        if self.values == self.loaded_values:
             return
+        self.loaded_values = dict(self.values)
         contents = self.values.get("map_contents")
         if not contents:
             self.map = None
