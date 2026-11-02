@@ -16,6 +16,7 @@
 
   <depend>autonomy_datasets_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>lanelet2_python</depend>
   <depend>perception_msgs</depend>
   <depend>perception_msgs_utils</depend>
   <depend>python3-shapely</depend>

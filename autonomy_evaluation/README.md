@@ -16,7 +16,9 @@ The node runs the evaluation selected by `evaluation`, either one of this packag
 | Evaluation | Evaluated | Reference | Context |
 | --- | --- | --- | --- |
 | `object_detection_3d` | `prediction` (`perception_msgs/ObjectList`) | `label` (`perception_msgs/ObjectList`); optionally `label_meta_info` (`autonomy_datasets_msgs/ObjectListMetaInfo`, subscribed next to `label` on `<label topic>/meta_info`) | - |
-| `closed_loop` | `ego_data` (`perception_msgs/EgoData`) | - | `objects` (`perception_msgs/ObjectList`), read by the `criticality` metrics only |
+| `closed_loop` | `ego_data` (`perception_msgs/EgoData`) | - | `objects` (`perception_msgs/ObjectList`), read by the `criticality` metrics only; optionally the Lanelet2 `map` of the current scene from the parameters of the `map_server` |
+
+A metric may also use the Lanelet2 map of the current scene, e.g. to find the lane the ego vehicle drives in. The node reads the map from the parameters `map_contents`, `origin_lat`, `origin_lon` and `map_frame_id` of the node set as `map_server`, as [lanelet2_map_server](https://github.com/openads-project/lanelet2_map_server) and [autonomy_datasets](https://github.com/thinking-cars/autonomy_datasets) (`/datasets`) provide them, and loads it anew whenever they change, e.g. with each scene of a dataset.
 
 Each evaluation is configured by parameters named `<evaluation>.<entry>`, e.g. `object_detection_3d.metrics` selecting the metrics it computes, which are usually set in a parameter file passed via the `config` launch argument. Nested entries are nested in the parameter file. Every entry that is not set keeps its default; the entries of each evaluation are documented in [IMPLEMENTATION.md](../docs/IMPLEMENTATION.md), their general structure in [Configuration](../docs/IMPLEMENTATION.md#configuration).
 
@@ -54,14 +56,22 @@ ros2 launch autonomy_evaluation autonomy_evaluation.launch.py \
   visualize:=true \
   sample_source:=external
 
-# evaluate a closed-loop planner with an evaluation of another package, which reads inputs only
+# evaluate a running closed-loop simulation, which calls '~/finish' at the end of its scenario
 ros2 launch autonomy_evaluation autonomy_evaluation.launch.py \
-  evaluation:=my_planner_evaluations.time_to_collision:TimeToCollision \
-  ego_data:=/ego_data \
+  evaluation:=closed_loop \
+  ego_data:=/simulation/ego_data \
   objects:=/simulation/objects \
+  map_server:=/lanelet2_map_server \
   sample_source:=external \
   sync_tolerance:=0.05 \
-  results_path:=/results/time_to_collision.json
+  results_path:=/results/closed_loop.json
+
+# run an evaluation of another package
+ros2 launch autonomy_evaluation autonomy_evaluation.launch.py \
+  evaluation:=my_package.evaluations:MyPlannerEvaluation \
+  ego_data:=/simulation/ego_data \
+  objects:=/simulation/objects \
+  sample_source:=external
 ```
 
 ```mermaid
@@ -96,6 +106,7 @@ flowchart LR
 | `sample_ids` | `string` | - | comma-separated IDs of the dataset samples to evaluate (e.g. '0,10,20'); if empty, all samples of the dataset are evaluated |
 | `evaluation_timeout` | `float` | `60.0` | seconds to wait for a published sample to be evaluated before continuing without it |
 | `results_path` | `string` | - | path of the JSON file the evaluation results are written to; results are only logged if empty |
+| `map_server` | `string` | - | node providing the Lanelet2 map of the current scene by its parameters 'map_contents', 'origin_lat', 'origin_lon' and 'map_frame_id', e.g. '/datasets' of autonomy_datasets or '/lanelet2_map_server'; evaluated without map if empty |
 | `<evaluation>.<entry>` | various | see evaluation | configuration of the evaluation, e.g. `object_detection_3d.metrics` selecting the metrics it computes; read-only |
 
 ## Launch Files
@@ -117,4 +128,5 @@ flowchart LR
 | `samples_per_request` | `"1"` | number of samples to request from the dataset at a time (0 requests all remaining samples at once) |
 | `sample_ids` | `""` | comma-separated IDs of the dataset samples to evaluate (all samples if empty) |
 | `evaluation_timeout` | `"60.0"` | seconds to wait for a published sample to be evaluated before continuing without it |
+| `map_server` | `""` | node providing the Lanelet2 map of the current scene by its parameters, e.g. `/datasets` of autonomy_datasets (evaluated without map if empty) |
 | `results_path` | `""` | path of the JSON file the evaluation results are written to (results are only logged if empty) |

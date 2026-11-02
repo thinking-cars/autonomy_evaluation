@@ -68,17 +68,25 @@ class Input:
             that input, for a topic published next to it, e.g.
             ``("label", "/meta_info")``. Such a topic follows the topic of the
             other input instead of being configured on its own.
+        static: Whether the input is no topic whose messages belong to single
+            samples, but context that holds for many samples and that the node
+            passes with every sample, e.g. the
+            :class:`~autonomy_evaluation.utils.Lanelet2Map.Lanelet2Map` of the
+            current scene. Its ``msg_type`` is the type of that context.
     """
 
     msg_type: Any
     role: str
     optional: bool = False
     next_to: Optional[Tuple[str, str]] = None
+    static: bool = False
 
     def __post_init__(self) -> None:
-        """Reject a role that is none of :data:`ROLES`."""
+        """Reject a role that is none of :data:`ROLES`, and a static input published next to a topic."""
         if self.role not in ROLES:
             raise ValueError(f"Input role '{self.role}' is none of {list(ROLES)}")
+        if self.static and self.next_to is not None:
+            raise ValueError("A static input is no topic, so it cannot be published next to one")
 
 
 class Sample:

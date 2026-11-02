@@ -13,8 +13,9 @@ road users are considered, whatever their class:
 - ``ttc``: time to collision, assuming that the ego vehicle and every road user
   keep their velocity, with the time exposed to and the time integrated over
   small times to collision.
-- ``thw``: time headway to the road user the ego vehicle follows, found in a
-  corridor along the path ahead of the ego vehicle.
+- ``thw``: time headway to the road user the ego vehicle follows, found along
+  the lanes of the Lanelet2 map or, without map, in a corridor along the path
+  ahead of the ego vehicle.
 - ``pet``: post-encroachment time, i.e. the time between the ego vehicle and
   another road user passing the same spot, classified by the angle of their
   paths like the conflict types of the Surrogate Safety Assessment Model (SSAM).
@@ -26,14 +27,23 @@ import math
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from autonomy_evaluation.evaluations.closed_loop.states import ego_state, object_states, to_ego_frame
+from autonomy_evaluation.evaluations.closed_loop.states import (
+    ego_state,
+    EgoState,
+    lanelet_map,
+    map_input,
+    object_states,
+    ObjectStates,
+    to_ego_frame,
+)
 from autonomy_evaluation.evaluations.Metric import Aggregation, CONTEXT, EVALUATED, Input, Metric, Sample
 from autonomy_evaluation.evaluations.sampling import sampling_period
 from autonomy_evaluation.utils.ClosedLoopUtils import ClosedLoopUtils
+from autonomy_evaluation.utils.Lanelet2Map import Lanelet2Map
 from perception_msgs.msg import EgoData, ObjectList
 
-# Collision types, following nuPlan, by whether the ego vehicle is at fault; None if that cannot be decided without
-# the lanes the road users drive in
+# Collision types, following nuPlan, by whether the ego vehicle is at fault; None if that is decided by the lanes the
+# road users drive in
 COLLISION_TYPES: Dict[str, Optional[bool]] = {
     "active_front": True,
     "active_rear": False,
@@ -63,7 +73,15 @@ class _CriticalityMetric(Metric):
         return criticality_inputs()
 
 
-class Collision(_CriticalityMetric):
+class _LaneAwareCriticalityMetric(_CriticalityMetric):
+    """Metric of the criticality of the ego vehicle that uses the lanes of the Lanelet2 map, if available."""
+
+    def inputs(self) -> Dict[str, Input]:
+        """Read the ego vehicle, the other road users and, optionally, the map of the current scene."""
+        return {**criticality_inputs(), "map": map_input()}
+
+
+class Collision(_LaneAwareCriticalityMetric):
     """Collisions of the ego vehicle, i.e. overlaps of its footprint with that of another road user.
 
     An overlap with the same road user over consecutive samples is one
@@ -79,7 +97,9 @@ class Collision(_CriticalityMetric):
       which is not at fault.
     - ``active_lateral``: the other road user hits a side of the ego vehicle;
       whether the ego vehicle is at fault depends on which of them left its
-      lane, which is undetermined without the lanes.
+      lane. With the Lanelet2 map, like in nuPlan, the ego vehicle is at fault
+      if its footprint covers several lanes or leaves the lanes, and else not;
+      without map, this is undetermined.
 
     Configuration:
         ``standstill_speed``: speed in m/s below which a road user stands still.
@@ -96,10 +116,12 @@ class Collision(_CriticalityMetric):
 
         Returns:
             One ``{"id", "side", "ego_speed", "object_speed",
-            "relative_speed"}`` entry per overlapping road user: its ID, the side
-            of the ego vehicle it overlaps (``None`` if they only touch), the
-            speeds of both in m/s, ``None`` for the ego vehicle without
-            velocity, and the magnitude of their relative velocity.
+            "relative_speed", "ego_off_lane"}`` entry per overlapping road user:
+            its ID, the side of the ego vehicle it overlaps (``None`` if they
+            only touch), the speeds of both in m/s, ``None`` for the ego vehicle
+            without velocity, the magnitude of their relative velocity, and
+            whether the ego vehicle covers several lanes or leaves the lanes,
+            ``None`` without map.
         """
         return _collisions(sample)
 
@@ -115,21 +137,25 @@ class Collision(_CriticalityMetric):
             ``None`` without collision or relative speed.
         """
         types = {collision_type: 0 for collision_type in COLLISION_TYPES}
+        faults = {True: 0, False: 0, None: 0}
         relative_speeds: List[float] = []
         for sequence in aggregation.sequences():
             colliding: set = set()
             for record in aggregation.records(self.name, sequence):
                 for collision in record:
                     if collision["id"] not in colliding:
-                        types[self._collision_type(collision)] += 1
+                        collision_type = self._collision_type(collision)
+                        types[collision_type] += 1
+                        at_fault = COLLISION_TYPES[collision_type]
+                        faults[collision["ego_off_lane"] if at_fault is None else at_fault] += 1
                         if collision["relative_speed"] is not None:
                             relative_speeds.append(collision["relative_speed"])
                 colliding = {collision["id"] for collision in record}
         return {
             "_value_": sum(types.values()),
-            "at_fault": sum(count for collision_type, count in types.items() if COLLISION_TYPES[collision_type] is True),
-            "not_at_fault": sum(count for collision_type, count in types.items() if COLLISION_TYPES[collision_type] is False),
-            "undetermined": sum(count for collision_type, count in types.items() if COLLISION_TYPES[collision_type] is None),
+            "at_fault": faults[True],
+            "not_at_fault": faults[False],
+            "undetermined": faults[None],
             "types": types,
             "max_relative_speed": max(relative_speeds, default=None),
         }
@@ -243,19 +269,26 @@ class TimeToCollision(_CriticalityMetric):
         }
 
 
-class TimeHeadway(_CriticalityMetric):
+class TimeHeadway(_LaneAwareCriticalityMetric):
     """Time headway (THW): time the ego vehicle needs to reach the rear of the road user it follows at its current speed.
 
-    The road user the ego vehicle follows is the closest one ahead whose
-    geometric center lies in a corridor along the path ahead of the ego
-    vehicle. The path continues the current yaw rate of the ego vehicle as a
-    circle, straight if its yaw rate is not set. The gap is the distance along
-    the path from the front of the ego vehicle to the rear of the road user,
-    zero if they overlap.
+    The road user the ego vehicle follows is the closest one ahead in its lane,
+    up to ``max_distance``. With the Lanelet2 map, the lane is the lanelet the
+    ego vehicle drives along and the lanelets following it, through every branch
+    of a junction ahead; a road user is in the lane if its geometric center lies
+    in one of these lanelets, and the gap is measured along their centerlines.
+    Without map, or while the ego vehicle drives along no lanelet, the lane is a
+    corridor along the path ahead of the ego vehicle, which continues its
+    current yaw rate as a circle, straight if its yaw rate is not set; a road
+    user is in the lane if its geometric center lies in the corridor, and the
+    gap is measured along the path. The gap runs from the front of the ego
+    vehicle to the rear of the road user, zero if they overlap.
 
     Configuration:
         ``corridor_width``: width in meters of the corridor along the path,
         e.g. the width of a lane.
+        ``max_distance``: distance in meters ahead of the ego vehicle up to
+        which road users are followed.
         ``min_speed``: speed in m/s of the ego vehicle below which it has no
         time headway, as it hardly moves.
     """
@@ -263,22 +296,29 @@ class TimeHeadway(_CriticalityMetric):
     NAME = "thw"
 
     def default_config(self) -> Dict[str, Any]:
-        """Search the lead vehicle in a corridor of a lane width of 3.5 m, for an ego vehicle moving at 0.5 m/s at least."""
-        return {"corridor_width": 3.5, "min_speed": 0.5}
+        """Follow road users up to 200 m ahead, in a corridor of a lane width of 3.5 m without map, at 0.5 m/s at least."""
+        return {"corridor_width": 3.5, "max_distance": 200.0, "min_speed": 0.5}
 
     def compute_sample(self, sample: Sample) -> Optional[Dict[str, Any]]:
         """Find the road user the ego vehicle follows at a sample and the time headway to it.
 
         Returns:
-            ``{"thw", "gap", "object_id"}``: the time headway in seconds, the
-            gap in meters and the ID of the followed road user; ``None`` if the
-            ego vehicle follows no road user or moves slower than ``min_speed``.
+            ``{"thw", "gap", "object_id", "source"}``: the time headway in
+            seconds, the gap in meters, the ID of the followed road user, and
+            whether it was found along the ``lanes`` of the map or in the
+            ``corridor``; ``None`` if the ego vehicle follows no road user or
+            moves slower than ``min_speed``.
         """
-        lead = lead_vehicle(sample, self.config["corridor_width"], self.config["min_speed"])
+        lead = lead_vehicle(sample, self.config["corridor_width"], self.config["max_distance"], self.config["min_speed"])
         if lead is None:
             return None
-        index, gap = lead
-        return {"thw": gap / ego_state(sample).vel_lon, "gap": gap, "object_id": int(object_states(sample).ids[index])}
+        index, gap, source = lead
+        return {
+            "thw": gap / ego_state(sample).vel_lon,
+            "gap": gap,
+            "object_id": int(object_states(sample).ids[index]),
+            "source": source,
+        }
 
     def visualization_outputs(self) -> Dict[str, Any]:
         """Publish the road user the ego vehicle follows."""
@@ -287,7 +327,7 @@ class TimeHeadway(_CriticalityMetric):
     def visualize_sample(self, sample: Sample) -> Dict[str, Any]:
         """Select the road user the ego vehicle follows at a sample, if any, in the frame of the ego vehicle."""
         objects = object_states(sample)
-        lead = lead_vehicle(sample, self.config["corridor_width"], self.config["min_speed"])
+        lead = lead_vehicle(sample, self.config["corridor_width"], self.config["max_distance"], self.config["min_speed"])
         followed = np.arange(len(objects.objects)) == (-1 if lead is None else lead[0])
         return {"lead_vehicle": ObjectList(header=objects.header, objects=objects.select(followed))}
 
@@ -295,16 +335,19 @@ class TimeHeadway(_CriticalityMetric):
         """Report the smallest and the mean time headway.
 
         Returns:
-            ``{"_value_", "mean", "share"}``: the smallest and the mean time
-            headway over the samples in which the ego vehicle follows a road
-            user in seconds, ``None`` if it never does, and the share of the
-            samples in which it follows one.
+            ``{"_value_", "mean", "share", "sources"}``: the smallest and the
+            mean time headway over the samples in which the ego vehicle follows
+            a road user in seconds, ``None`` if it never does, the share of the
+            samples in which it follows one, and whether the followed road users
+            were found along the ``lanes`` of the map or in the ``corridor``.
         """
-        thws = [record["thw"] for record in aggregation.records(self.name) if record is not None]
+        records = [record for record in aggregation.records(self.name) if record is not None]
+        thws = [record["thw"] for record in records]
         return {
             "_value_": min(thws, default=None),
             "mean": float(np.mean(thws)) if thws else None,
             "share": len(thws) / len(aggregation.entries) if aggregation.entries else None,
+            "sources": sorted({record["source"] for record in records}),
         }
 
 
@@ -446,38 +489,114 @@ def time_to_collision(sample: Sample, horizon: float, time_step: float) -> Optio
     return sample.memo(("ttc", horizon, time_step), compute)
 
 
-def lead_vehicle(sample: Sample, corridor_width: float, min_speed: float) -> Optional[Tuple[int, float]]:
+def lead_vehicle(
+    sample: Sample, corridor_width: float, max_distance: float, min_speed: float
+) -> Optional[Tuple[int, float, str]]:
     """Find the road user the ego vehicle of a sample follows, see :class:`TimeHeadway`.
 
     Args:
-        sample: Sample holding the ``ego_data`` and ``objects`` messages.
-        corridor_width: Width in meters of the corridor along the path ahead.
+        sample: Sample holding the ``ego_data`` and ``objects`` messages and, if available, the ``map``.
+        corridor_width: Width in meters of the corridor along the path ahead, without map.
+        max_distance: Distance in meters ahead of the ego vehicle up to which road users are followed.
         min_speed: Speed in m/s of the ego vehicle below which it follows no one.
 
     Returns:
-        ``(index, gap)``: the index of the followed road user among the
-        objects and the gap to it in meters; ``None`` if the ego vehicle
+        ``(index, gap, source)``: the index of the followed road user among the
+        objects, the gap to it in meters, and whether it was found along the
+        ``lanes`` of the map or in the ``corridor``; ``None`` if the ego vehicle
         follows no road user or moves slower than ``min_speed``.
     """
 
-    def find() -> Optional[Tuple[int, float]]:
+    def find() -> Optional[Tuple[int, float, str]]:
         ego = ego_state(sample)
         if ego.vel_lon is None or ego.vel_lon < min_speed:
             return None
         objects = object_states(sample)
-        curvature = ego.yaw_rate / ego.vel_lon if ego.yaw_rate is not None else 0.0
-        s, d = ClosedLoopUtils.path_coordinates(*to_ego_frame(ego, objects.x, objects.y), curvature)
-        # extent of each road user along the path, whose heading at the road user turned by the curvature
-        heading = ClosedLoopUtils.wrap_angle(objects.yaw - ego.yaw - curvature * s)
-        half_extent = np.abs(0.5 * objects.length * np.cos(heading)) + np.abs(0.5 * objects.width * np.sin(heading))
-        gap = np.maximum(s - 0.5 * ego.length - half_extent, 0.0)
-        candidates = np.flatnonzero((s > 0.0) & (np.abs(d) <= 0.5 * corridor_width))
-        if candidates.size == 0:
-            return None
-        index = int(candidates[np.argmin(gap[candidates])])
-        return index, float(gap[index])
+        current_map = lanelet_map(sample)
+        lane = current_map.lane_of(ego.x, ego.y, ego.yaw) if current_map is not None else None
+        if lane is not None:
+            lead = _lead_vehicle_along_lanes(current_map, lane, ego, objects, max_distance)
+            return None if lead is None else (*lead, "lanes")
+        lead = _lead_vehicle_in_corridor(ego, objects, corridor_width, max_distance)
+        return None if lead is None else (*lead, "corridor")
 
-    return sample.memo(("lead_vehicle", corridor_width, min_speed), find)
+    return sample.memo(("lead_vehicle", corridor_width, max_distance, min_speed), find)
+
+
+def _lead_vehicle_in_corridor(
+    ego: EgoState, objects: ObjectStates, corridor_width: float, max_distance: float
+) -> Optional[Tuple[int, float]]:
+    """Find the closest road user ahead in a corridor along the path the ego vehicle drives at its current yaw rate."""
+    curvature = ego.yaw_rate / ego.vel_lon if ego.yaw_rate is not None else 0.0
+    s, d = ClosedLoopUtils.path_coordinates(*to_ego_frame(ego, objects.x, objects.y), curvature)
+    # extent of each road user along the path, whose heading at the road user is turned by the curvature
+    half_extent = _half_extents_along(objects, ego.yaw + curvature * s)
+    gap = np.maximum(s - 0.5 * ego.length - half_extent, 0.0)
+    candidates = np.flatnonzero((s > 0.0) & (s <= max_distance) & (np.abs(d) <= 0.5 * corridor_width))
+    if candidates.size == 0:
+        return None
+    index = int(candidates[np.argmin(gap[candidates])])
+    return index, float(gap[index])
+
+
+def _lead_vehicle_along_lanes(
+    current_map: Lanelet2Map, lane: Any, ego: EgoState, objects: ObjectStates, max_distance: float
+) -> Optional[Tuple[int, float]]:
+    """Find the closest road user ahead in the lanelets the ego vehicle may follow from its lanelet."""
+    ego_s = current_map.lane_coordinates(lane, ego.x, ego.y)[0]
+    paths = current_map.paths_ahead(lane, ego_s + max_distance)
+    best: Optional[Tuple[int, float]] = None
+    for index in range(len(objects.objects)):
+        x, y = float(objects.x[index]), float(objects.y[index])
+        object_lanelets = {lanelet.id for lanelet in current_map.lanelets_at(x, y)}
+        for path in paths:
+            offset = 0.0
+            for lanelet in path:
+                if lanelet.id in object_lanelets:
+                    s, _, heading = current_map.lane_coordinates(lanelet, x, y)
+                    distance = offset + s - ego_s
+                    if 0.0 < distance <= max_distance:
+                        half_extent = float(_half_extents_along(objects, heading)[index])
+                        gap = max(distance - 0.5 * ego.length - half_extent, 0.0)
+                        if best is None or gap < best[1]:
+                            best = (index, gap)
+                    break
+                offset += current_map.length(lanelet)
+    return best
+
+
+def _half_extents_along(objects: ObjectStates, heading) -> np.ndarray:
+    """Return half the extent of each road user along a heading, e.g. that of the lane it drives in."""
+    deviation = ClosedLoopUtils.wrap_angle(objects.yaw - heading)
+    return np.abs(0.5 * objects.length * np.cos(deviation)) + np.abs(0.5 * objects.width * np.sin(deviation))
+
+
+def _ego_off_lane(sample: Sample) -> Optional[bool]:
+    """Decide whether the ego vehicle of a sample covers several lanes or leaves the lanes of the map.
+
+    The ego vehicle stays in its lane if it drives along a lanelet and every
+    corner of its footprint lies in that lanelet or a lanelet directly before or
+    after it.
+
+    Returns:
+        Whether the ego vehicle covers several lanes or leaves the lanes,
+        ``None`` without map.
+    """
+
+    def decide() -> Optional[bool]:
+        current_map = lanelet_map(sample)
+        if current_map is None:
+            return None
+        ego = ego_state(sample)
+        lane = current_map.lane_of(ego.x, ego.y, ego.yaw)
+        if lane is None:
+            return True
+        for x, y in ClosedLoopUtils.rectangle_corners(*ego.rectangle):
+            if not any(current_map.connected(lane, lanelet) for lanelet in current_map.lanelets_at(float(x), float(y))):
+                return True
+        return False
+
+    return sample.memo("ego_off_lane", decide)
 
 
 def _collisions(sample: Sample) -> List[Dict[str, Any]]:
@@ -499,6 +618,7 @@ def _collisions(sample: Sample) -> List[Dict[str, Any]]:
                     "relative_speed": (
                         None if ego.velocity is None else math.hypot(velocity[0] - ego.velocity[0], velocity[1] - ego.velocity[1])
                     ),
+                    "ego_off_lane": _ego_off_lane(sample),
                 }
             )
         return collisions

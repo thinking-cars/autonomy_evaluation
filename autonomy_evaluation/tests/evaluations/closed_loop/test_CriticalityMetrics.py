@@ -14,12 +14,13 @@ import math
 import pytest
 from autonomy_evaluation.evaluations.closed_loop.ClosedLoop import ClosedLoop
 from tests.evaluations.closed_loop.messages import ego_data, object_list, road_user
+from tests.utils.lanelet2_maps import bend, junction, two_lane_road
 
 _PERIOD = 0.1
 
 
-def _evaluate(samples, metrics=None, config=None, scene_ids=None) -> dict:
-    """Record ``(stamp, ego_data keyword arguments, road users)`` samples and aggregate them over all samples."""
+def _evaluate(samples, metrics=None, config=None, scene_ids=None, lanelet2_map=None) -> dict:
+    """Record ``(stamp, ego_data keyword arguments, road users)`` samples, with the map if given, and aggregate them."""
     evaluation = ClosedLoop()
     evaluation.configure({"metrics": metrics or ["criticality"], **(config or {})})
     for index, (stamp, ego, road_users) in enumerate(samples):
@@ -29,6 +30,7 @@ def _evaluate(samples, metrics=None, config=None, scene_ids=None) -> dict:
             stamp=stamp,
             ego_data=ego_data(stamp=stamp, **ego),
             objects=object_list(road_users, stamp=stamp),
+            map=lanelet2_map,
         )
     return evaluation.finalize()["metrics"]["criticality"]
 
@@ -175,7 +177,7 @@ class TestTimeHeadway:
 
         thw = _evaluate([(0.0, {"vel_lon": 20.0, "yaw_rate": 0.0}, road_users)])["thw"]
 
-        assert thw == {"_value_": pytest.approx(2.0), "mean": pytest.approx(2.0), "share": 1.0}
+        assert thw == {"_value_": pytest.approx(2.0), "mean": pytest.approx(2.0), "share": 1.0, "sources": ["corridor"]}
 
     def test_follows_the_car_ahead_around_a_bend(self):
         """In a bend of 100 m radius, the car 50 m ahead along the bend lies 12 m to the left, but is followed."""
@@ -198,7 +200,7 @@ class TestTimeHeadway:
         """An ego vehicle that hardly moves would take forever to reach any car ahead."""
         thw = _evaluate([(0.0, {"vel_lon": 0.2}, [road_user(1, 10.0, 0.0)])])["thw"]
 
-        assert thw == {"_value_": None, "mean": None, "share": 0.0}
+        assert thw == {"_value_": None, "mean": None, "share": 0.0, "sources": []}
 
     def test_mean_and_share_over_the_samples_following_a_car(self):
         """The mean is taken over the samples in which the ego vehicle follows a car, the share over all."""
@@ -327,6 +329,100 @@ class TestVisualization:
         assert list(evaluation.visualization_outputs()) == ["lead_vehicle"]
 
 
+class TestTimeHeadwayAlongLanes:
+    """Tests finding the road user the ego vehicle follows along the lanes of the Lanelet2 map."""
+
+    def test_follows_the_car_ahead_in_the_following_lanelet(self):
+        """The lane continues into the following lanelet; a closer car in the neighboring lane is not followed."""
+        road, _ = two_lane_road()
+        road_users = [road_user(1, 134.0, 0.0, vel_lon=20.0), road_user(2, 40.0, 3.5, vel_lon=20.0)]
+
+        thw = _evaluate([(0.0, {"x": 10.0, "vel_lon": 20.0}, road_users)], lanelet2_map=road)["thw"]
+
+        assert thw["_value_"] == pytest.approx((124.0 - 2.0 - 2.0) / 20.0)
+        assert thw["sources"] == ["lanes"]
+
+    def test_follows_the_car_ahead_around_a_bend_without_yaw_rate(self):
+        """The lane bends, so the car 50 m ahead along it is followed, although the ego vehicle sets no yaw rate."""
+        road, _ = bend(radius=100.0, angle=1.0)
+        ahead = road_user(1, 100.0 * math.sin(0.5), 100.0 * (1.0 - math.cos(0.5)), yaw=0.5)
+
+        with_map = _evaluate([(0.0, {"vel_lon": 20.0}, [ahead])], lanelet2_map=road)["thw"]
+        without_map = _evaluate([(0.0, {"vel_lon": 20.0}, [ahead])])["thw"]
+
+        assert with_map["_value_"] == pytest.approx((50.0 - 2.0 - 2.0) / 20.0, abs=0.01)
+        assert without_map["_value_"] is None
+
+    def test_follows_the_closest_car_on_any_branch_of_a_junction(self):
+        """Which branch the ego vehicle takes is unknown, so the closest car on any of them is followed.
+
+        The car on the branch is 50 m + 25 m ahead along the lanes, the car straight on 110 m.
+        """
+        road, _ = junction()
+        on_branch = road_user(2, 100.0 + 25.0 / math.sqrt(2.0), 25.0 / math.sqrt(2.0), yaw=math.pi / 4.0)
+        road_users = [road_user(1, 160.0, 0.0), on_branch]
+
+        thw = _evaluate([(0.0, {"x": 50.0, "vel_lon": 10.0}, road_users)], lanelet2_map=road)["thw"]
+
+        assert thw["_value_"] == pytest.approx((75.0 - 2.0 - 2.0) / 10.0, abs=0.01)
+
+    def test_falls_back_to_the_corridor_off_the_lanes(self):
+        """An ego vehicle driving along no lanelet, e.g. on a parking lot, follows the corridor ahead."""
+        road, _ = two_lane_road()
+
+        thw = _evaluate([(0.0, {"x": 10.0, "y": -20.0, "vel_lon": 10.0}, [road_user(1, 34.0, -20.0)])], lanelet2_map=road)["thw"]
+
+        assert thw["_value_"] == pytest.approx(2.0)
+        assert thw["sources"] == ["corridor"]
+
+    def test_map_in_another_frame_is_not_used(self):
+        """Without transform between map and ego vehicle, the lanes cannot be related to the ego vehicle."""
+        road, _ = two_lane_road()
+        road.frame_id = "utm"
+
+        thw = _evaluate([(0.0, {"x": 10.0, "vel_lon": 20.0}, [road_user(1, 134.0, 0.0)])], lanelet2_map=road)["thw"]
+
+        assert thw["sources"] == ["corridor"]
+
+
+class TestLateralCollisionFault:
+    """Tests deciding who is at fault for a lateral collision by the lanes the ego vehicle covers."""
+
+    @staticmethod
+    def _lateral_collision(ego_y: float, lanelet2_map) -> dict:
+        """A car overlapping the left side of the ego vehicle, which drives along the road at 10 m/s."""
+        samples = [
+            (0.0, {"x": 50.0, "y": ego_y, "vel_lon": 10.0}, [road_user(1, 50.0, ego_y + 5.0, vel_lon=10.0)]),
+            (1.0, {"x": 60.0, "y": ego_y, "vel_lon": 10.0}, [road_user(1, 60.0, ego_y + 1.8, vel_lon=10.0)]),
+        ]
+        return _evaluate(samples, metrics=["criticality.collision"], lanelet2_map=lanelet2_map)["collision"]
+
+    def test_ego_vehicle_in_its_lane_is_not_at_fault(self):
+        """A car changing into the lane of the ego vehicle causes the collision."""
+        road, _ = two_lane_road()
+
+        collision = self._lateral_collision(ego_y=0.0, lanelet2_map=road)
+
+        assert collision["types"]["active_lateral"] == 1
+        assert collision["not_at_fault"] == 1
+
+    def test_ego_vehicle_covering_two_lanes_is_at_fault(self):
+        """An ego vehicle straddling the lane boundary causes the collision."""
+        road, _ = two_lane_road()
+
+        assert self._lateral_collision(ego_y=1.0, lanelet2_map=road)["at_fault"] == 1
+
+    def test_ego_vehicle_leaving_the_lanes_is_at_fault(self):
+        """An ego vehicle off the road causes the collision."""
+        road, _ = two_lane_road()
+
+        assert self._lateral_collision(ego_y=-3.0, lanelet2_map=road)["at_fault"] == 1
+
+    def test_fault_is_undetermined_without_map(self):
+        """Without lanes, it is unknown which road user left its lane."""
+        assert self._lateral_collision(ego_y=0.0, lanelet2_map=None)["undetermined"] == 1
+
+
 class TestCriticalitySelection:
     """Tests selecting the criticality metrics."""
 
@@ -335,10 +431,15 @@ class TestCriticalitySelection:
         evaluation = ClosedLoop()
         evaluation.configure({"metrics": ["criticality"]})
 
-        assert {name: declared.role for name, declared in evaluation.inputs().items()} == {
+        inputs = evaluation.inputs()
+
+        assert {name: declared.role for name, declared in inputs.items()} == {
             "ego_data": "evaluated",
             "objects": "context",
+            "map": "context",
         }
+        # the map is no topic, but context the node passes with every sample, and the metrics fall back to heuristics without
+        assert inputs["map"].static and inputs["map"].optional
 
     def test_all_groups_are_selected_by_default(self):
         """By default, the closed-loop evaluation computes its criticality and its comfort."""

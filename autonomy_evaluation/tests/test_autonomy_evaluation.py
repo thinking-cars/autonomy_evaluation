@@ -26,7 +26,8 @@ from types import SimpleNamespace
 import pytest
 from autonomy_evaluation import autonomy_evaluation
 from autonomy_evaluation.autonomy_evaluation import AutonomyEvaluation, parse_sample_ids, SampleSynchronizer
-from autonomy_evaluation.evaluations import Aggregation, EVALUATED, Evaluation, Input, Metric, MetricGroup
+from autonomy_evaluation.evaluations import Aggregation, CONTEXT, EVALUATED, Evaluation, Input, Metric, MetricGroup
+from autonomy_evaluation.utils.Lanelet2Map import Lanelet2Map
 from std_srvs.srv import Trigger
 
 _TOPICS = ["prediction", "label", "label_meta_info"]
@@ -268,7 +269,7 @@ class _FakeLogger:
         """Record a logged message, whatever its severity."""
         self.messages.append(message)
 
-    debug = warn = error = info
+    debug = warn = error = fatal = info
 
 
 class _FakeEvaluationHandler:
@@ -318,6 +319,7 @@ def _evaluating_node(requests_samples: bool) -> SimpleNamespace:
         results_path="",
         visualization_publishers={},
         num_advances=0,
+        static_messages=lambda: {},
         get_logger=lambda logger=_FakeLogger(): logger,
     )
     node.advance_evaluation = lambda: setattr(node, "num_advances", node.num_advances + 1)
@@ -341,6 +343,15 @@ class TestEvaluateSample:
 
         assert node.evaluation_handler.recorded_messages == messages
         assert node.evaluation_handler.recorded_samples[0]["sample_id"] == "1531885320.049418000"
+
+    def test_passes_the_static_inputs_with_every_sample(self):
+        """Context that holds for many samples, e.g. the map of the current scene, joins the messages of each sample."""
+        node = _evaluating_node(requests_samples=True)
+        node.static_messages = lambda: {"map": "map of the scene"}
+
+        AutonomyEvaluation.evaluate_sample(node, _NEXT_SCENE[0], _sample_messages(_NEXT_SCENE[0]))
+
+        assert node.evaluation_handler.recorded_messages["map"] == "map of the scene"
 
     def test_passes_the_stamp_of_the_sample_in_seconds(self):
         """Metrics that depend on the time between samples, e.g. a jerk, read the stamp of each sample."""
@@ -579,6 +590,52 @@ class TestConfigureEvaluation:
         """A value the evaluation cannot use stops the node with the reason."""
         with pytest.raises(ValueError, match="'distance.scale' to be of type float"):
             AutonomyEvaluation.configure_evaluation(self._node({"configurable.distance.scale": "far"}), _ConfigurableEvaluation())
+
+
+class TestStaticInputs:
+    """Tests providing the static inputs of an evaluation, i.e. the Lanelet2 map of the current scene."""
+
+    @staticmethod
+    def _node(map_server: str) -> SimpleNamespace:
+        """Stub the node state that setting up the static inputs reads."""
+        return SimpleNamespace(map_server=map_server, get_logger=lambda logger=_FakeLogger(): logger)
+
+    def test_optional_map_without_map_server_is_none(self):
+        """Without map server, a metric that can do without map is evaluated without it."""
+        node = self._node(map_server="")
+
+        AutonomyEvaluation.setup_static_inputs(node, {"map": Input(Lanelet2Map, CONTEXT, optional=True, static=True)})
+
+        assert node.map_client is None
+        assert node.static_input_sources == {}
+        assert AutonomyEvaluation.static_messages(node) == {"map": None}
+
+    def test_required_map_needs_a_map_server(self):
+        """A metric that needs a map cannot be computed without one."""
+        with pytest.raises(SystemExit):
+            AutonomyEvaluation.setup_static_inputs(self._node(map_server=""), {"map": Input(Lanelet2Map, CONTEXT, static=True)})
+
+    def test_rejects_a_static_input_the_node_cannot_provide(self):
+        """The node provides maps only."""
+        with pytest.raises(SystemExit):
+            AutonomyEvaluation.setup_static_inputs(
+                self._node(map_server="/datasets"), {"route": Input(object, CONTEXT, static=True)}
+            )
+
+    def test_passes_the_map_of_the_map_client(self, monkeypatch):
+        """The map the client received from the map server is passed with every sample."""
+
+        class _FakeClient:
+            def __init__(self, node, server):
+                self.server, self.map = server, "map of the scene"
+
+        monkeypatch.setattr(autonomy_evaluation, "Lanelet2MapClient", _FakeClient)
+        node = self._node(map_server="/datasets")
+
+        AutonomyEvaluation.setup_static_inputs(node, {"map": Input(Lanelet2Map, CONTEXT, optional=True, static=True)})
+
+        assert node.static_input_sources == {"map": "parameters of /datasets"}
+        assert AutonomyEvaluation.static_messages(node) == {"map": "map of the scene"}
 
 
 class TestReceiveMessage:

@@ -12,8 +12,10 @@ from typing import Any, Callable, Collection, Optional, Sequence, Union
 import rclpy
 import rclpy.exceptions
 from autonomy_datasets_msgs.srv import RequestSamples
-from autonomy_evaluation.evaluations import Evaluation, load_evaluation, ROLES
+from autonomy_evaluation.evaluations import Evaluation, Input, load_evaluation, ROLES
 from autonomy_evaluation.evaluations.Evaluation import CONFIG_SEPARATOR, flatten_config, unflatten_config
+from autonomy_evaluation.lanelet2_map_client import Lanelet2MapClient
+from autonomy_evaluation.utils.Lanelet2Map import Lanelet2Map
 from rcl_interfaces.msg import FloatingPointRange, IntegerRange, ParameterDescriptor, SetParametersResult
 from rclpy.clock import Clock, ClockType
 from rclpy.executors import ExternalShutdownException
@@ -298,6 +300,17 @@ class AutonomyEvaluation(Node):
             default="",
         )
 
+        self.map_server = self.declare_and_load_parameter(
+            name="map_server",
+            param_type=rclpy.Parameter.Type.STRING,
+            description="node providing the Lanelet2 map of the current scene by its parameters 'map_contents', 'origin_lat', "
+            "'origin_lon' and 'map_frame_id', e.g. '/datasets' of autonomy_datasets or '/lanelet2_map_server'; evaluated "
+            "without map if empty",
+            default="",
+            add_to_auto_reconfigurable_params=False,
+            read_only=True,
+        )
+
         self.setup()
 
     def declare_and_load_parameter(
@@ -404,10 +417,13 @@ class AutonomyEvaluation(Node):
         try:
             evaluation_handler = load_evaluation(self.evaluation)
             self.configure_evaluation(evaluation_handler)
-            inputs = evaluation_handler.inputs()
+            declared_inputs = evaluation_handler.inputs()
         except ValueError as exception:
             self.get_logger().fatal(f"{exception}, exiting")
             raise SystemExit(1)
+        # static inputs are no topics, but context the node passes with every sample, e.g. the map
+        inputs = {name: declared for name, declared in declared_inputs.items() if not declared.static}
+        self.setup_static_inputs({name: declared for name, declared in declared_inputs.items() if declared.static})
 
         # provide the evaluation with the transforms between the frames of its messages, e.g. to
         # compare objects given in different frames; the buffer follows the node clock, so that it
@@ -442,13 +458,14 @@ class AutonomyEvaluation(Node):
                 ),
             )
         evaluation_handler.input_topics = {
-            name: subscription.topic_name for name, subscription in self.data_subscriptions.items()
+            **{name: subscription.topic_name for name, subscription in self.data_subscriptions.items()},
+            **self.static_input_sources,
         }
         for role in ROLES:
             topics = ", ".join(
-                f"'{name}' from '{self.data_subscriptions[name].topic_name}'" + (" (optional)" if declared.optional else "")
-                for name, declared in inputs.items()
-                if declared.role == role
+                f"'{name}' from '{evaluation_handler.input_topics[name]}'" + (" (optional)" if declared.optional else "")
+                for name, declared in declared_inputs.items()
+                if declared.role == role and name in evaluation_handler.input_topics
             )
             if topics:
                 self.get_logger().info(f"Reading {role} {topics}")
@@ -533,6 +550,46 @@ class AutonomyEvaluation(Node):
             clock=Clock(clock_type=ClockType.STEADY_TIME),
         )
         self.get_logger().info(f"Requesting samples to evaluate from '{self.sample_request_service}'")
+
+    def setup_static_inputs(self, static_inputs: dict[str, Input]):
+        """Sets up the sources of the static inputs of the evaluation, which the node passes with every sample
+
+        A static input is no topic, but context that holds for many samples. The only static input
+        is the Lanelet2 map of the current scene, which a client receives from the parameters of
+        the 'map_server' node. Without map server, an optional map is None, and a required one stops
+        the node.
+
+        Args:
+            static_inputs (dict[str, Input]): static inputs of the evaluation by name
+
+        Raises:
+            SystemExit: if a static input cannot be provided
+        """
+        self.map_client: Optional[Lanelet2MapClient] = None
+        # name of each static input to a description of where it is read from, for the results
+        self.static_input_sources: dict[str, str] = {}
+        self.static_inputs = static_inputs
+        for name, declared in static_inputs.items():
+            if declared.msg_type is not Lanelet2Map:
+                self.get_logger().fatal(f"Static input '{name}' of type {declared.msg_type} cannot be provided, exiting")
+                raise SystemExit(1)
+            if not self.map_server:
+                if not declared.optional:
+                    self.get_logger().fatal(f"Input '{name}' requires a Lanelet2 map, set parameter 'map_server', exiting")
+                    raise SystemExit(1)
+                self.get_logger().info(f"Evaluating without optional '{name}', as parameter 'map_server' is not set")
+                continue
+            if self.map_client is None:
+                self.map_client = Lanelet2MapClient(self, self.map_server)
+            self.static_input_sources[name] = f"parameters of {self.map_client.server}"
+
+    def static_messages(self) -> dict[str, Any]:
+        """Collects the current values of the static inputs, which are passed with the messages of a sample
+
+        Returns:
+            dict[str, Any]: value of each static input by name, None for a map that is not available
+        """
+        return {name: self.map_client.map if self.map_client is not None else None for name in self.static_inputs}
 
     def configure_evaluation(self, evaluation: Evaluation):
         """Configures the evaluation, e.g. which metrics it computes, by the ROS parameters named after it
@@ -876,8 +933,8 @@ class AutonomyEvaluation(Node):
         """Evaluates a single sample once the messages of all its inputs have been received
 
         The messages are passed to the evaluation by the names of their inputs, which match the
-        parameters of its ``compute_sample_metrics``. The message of optional ground truth whose
-        topic is not published is None.
+        parameters of its ``compute_sample_metrics``, together with the current values of the static
+        inputs, e.g. the map. The message of an optional input whose topic is not published is None.
 
         Samples are identified by the stamp of their message of the first input, which is the
         stamp the dataset recorded them with, and are attributed to the scene the dataset
@@ -890,6 +947,7 @@ class AutonomyEvaluation(Node):
         sample_id = f"{stamp[0]}.{stamp[1]:09d}"
         self.get_logger().debug(f"Evaluating sample '{sample_id}'")
 
+        messages = {**messages, **self.static_messages()}
         result = self.evaluation_handler.record_sample(sample_id=sample_id, stamp=_to_nanoseconds(stamp) * 1e-9, **messages)
         self.num_evaluated_samples += 1
         # attribute the sample to the scene the dataset published it from, which the dataset may

@@ -34,7 +34,7 @@ Detailed metric definitions and computation notes are documented in [docs/IMPLEM
 | Evaluation | Datasets | Task | Preview |
 | ---------- | -------- | ---- | ------- |
 | [**3D Object Detection**](docs/IMPLEMENTATION.md#3d-object-detection) | All [Autonomy.Datasets](https://github.com/thinking-cars/autonomy_datasets) with 3D object labels | 3D bounding box detection on the classes of `perception_msgs/ObjectClassification` | ![Rviz Screenshot 3D Object Detection evaluation](./docs/assets/3d-object-detection.png)
-| [**Closed-Loop**](docs/IMPLEMENTATION.md#closed-loop) | Closed-loop simulations publishing `perception_msgs/EgoData` and `perception_msgs/ObjectList`, recorded and replayed by [Autonomy.Datasets](https://github.com/thinking-cars/autonomy_datasets) or live | Driving behavior of the ego vehicle a system under test drives: criticality (collisions, TTC, THW, PET) and comfort (acceleration, jerk, yaw rate) | |
+| [**Closed-Loop**](docs/IMPLEMENTATION.md#closed-loop) | Closed-loop simulations publishing `perception_msgs/EgoData` and `perception_msgs/ObjectList`, optionally with a Lanelet2 map, recorded and replayed by [Autonomy.Datasets](https://github.com/thinking-cars/autonomy_datasets) or live | Driving behavior of the ego vehicle a system under test drives: criticality (collisions, TTC, THW, PET) and comfort (acceleration, jerk, yaw rate) | |
 
 <p align="center">
   <strong>🚀 <a href="#-quick-start">Quick Start</a></strong> • <strong>💻 <a href="#-development">Development</a></strong> • <strong>📝 <a href="#-documentation">Documentation</a></strong>

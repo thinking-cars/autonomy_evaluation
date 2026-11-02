@@ -19,6 +19,8 @@ Both are reduced to oriented rectangles on the ground plane:
   covariance, is unavailable. A state without covariance has all its entries set.
 - Objects given in another frame than the ego vehicle are transformed into the
   frame of the ego vehicle with tf2.
+- The Lanelet2 map of the current scene, passed as optional static ``map``
+  input, is only used while it is given in the frame of the ego vehicle.
 
 Everything derived from a sample is derived once and shared among the metrics
 through :meth:`~autonomy_evaluation.evaluations.Metric.Sample.memo`.
@@ -34,7 +36,8 @@ from typing import Any, Callable, List, Optional, Tuple
 import numpy as np
 import rclpy.logging
 import tf2_perception_msgs  # noqa: F401, registers the tf2 transforms of perception_msgs/ObjectList and EgoData
-from autonomy_evaluation.evaluations.Metric import Sample
+from autonomy_evaluation.evaluations.Metric import CONTEXT, Input, Sample
+from autonomy_evaluation.utils.Lanelet2Map import Lanelet2Map
 from perception_msgs_utils.checks import InvalidStateCovarianceSizeError
 from perception_msgs_utils.constants import CONTINUOUS_STATE_COVARIANCE_INVALID
 from perception_msgs_utils.convenience_state_getters import get_continuous_state_covariance_at
@@ -214,6 +217,35 @@ def object_states(sample: Sample) -> ObjectStates:
         )
 
     return sample.memo("object_states", read)
+
+
+def map_input() -> Input:
+    """Declare the Lanelet2 map of the current scene as optional static context of a metric."""
+    return Input(Lanelet2Map, CONTEXT, optional=True, static=True)
+
+
+def lanelet_map(sample: Sample) -> Optional[Lanelet2Map]:
+    """Return the Lanelet2 map of a sample, if it is given in the frame of the ego vehicle.
+
+    A map in another frame than the ego vehicle is not used, which is warned about once.
+
+    Args:
+        sample: Sample holding the ``ego_data`` message and, if available, the ``map``.
+
+    Returns:
+        The map, ``None`` without map or for a map in another frame.
+    """
+    current = sample.messages.get("map")
+    if current is None:
+        return None
+    frame_id = ego_state(sample).frame_id
+    if frame_id and current.frame_id != frame_id:
+        _LOGGER.warning(
+            f"The Lanelet2 map in frame '{current.frame_id}' is not used, as the ego vehicle is given in frame '{frame_id}'",
+            once=True,
+        )
+        return None
+    return current
 
 
 def to_ego_frame(ego: EgoState, x: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:

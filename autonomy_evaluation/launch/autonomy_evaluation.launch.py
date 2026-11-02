@@ -35,6 +35,8 @@ def input_remappings(evaluation: Evaluation, launch_configurations: Mapping[str,
     """
     remappings = []
     for name, declared in evaluation.available_inputs().items():
+        if declared.static:
+            continue  # no topic, but context the node provides, e.g. the map
         if name in launch_configurations:
             remappings.append((name, launch_configurations[name]))
         elif declared.next_to is None:
@@ -85,6 +87,7 @@ def launch_node(context: LaunchContext, remappings: list) -> list[Node]:
             {"sample_ids": ParameterValue(LaunchConfiguration("sample_ids"), value_type=str)},
             {"evaluation_timeout": ParameterValue(LaunchConfiguration("evaluation_timeout"), value_type=float)},
             {"results_path": ParameterValue(LaunchConfiguration("results_path"), value_type=str)},
+            {"map_server": ParameterValue(LaunchConfiguration("map_server"), value_type=str)},
         ],
         arguments=["--ros-args", "--log-level", LaunchConfiguration("log_level")],
         remappings=input_remappings(evaluation, context.launch_configurations) + remappings,
@@ -170,6 +173,12 @@ def generate_launch_description():
             "evaluation_timeout",
             default_value="60.0",
             description="seconds to wait for a published sample to be evaluated before continuing without it",
+        ),
+        DeclareLaunchArgument(
+            "map_server",
+            default_value="",
+            description="node providing the Lanelet2 map of the current scene by its parameters, e.g. '/datasets' of "
+            "autonomy_datasets or '/lanelet2_map_server' (evaluated without map if empty)",
         ),
         DeclareLaunchArgument(
             "results_path",
