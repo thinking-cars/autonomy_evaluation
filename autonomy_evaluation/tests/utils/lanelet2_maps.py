@@ -104,6 +104,27 @@ def bend(radius: float = 100.0, angle: float = 1.0, num_points: int = 50) -> Tup
     return _map(lanelets), lanelets
 
 
+def road_with_sidewalk() -> Tuple[Lanelet2Map, Dict[str, Lanelet]]:
+    """Build a straight road along the x axis from 0 to 100 m, with a sidewalk along its right edge.
+
+    The road ``road`` is a single 3.5 m wide lane centered on the x axis that may be driven in both
+    directions at up to 30 km/h; the sidewalk ``sidewalk`` spans y from -3.75 m to -1.75 m.
+
+    Returns:
+        The map and its lanelets by name.
+    """
+    half = LANE_WIDTH / 2.0
+    left, right = _points([(0.0, half), (100.0, half)]), _points([(0.0, -half), (100.0, -half)])
+    road = _lanelet(_line(left), _line(right))
+    road.attributes["one_way"] = "no"
+    road.attributes["speed_limit"] = "30"
+    sidewalk = Lanelet(getId(), _line(right), _line(_points([(0.0, -half - 2.0), (100.0, -half - 2.0)])))
+    for key, value in {"type": "lanelet", "subtype": "walkway", "location": "urban"}.items():
+        sidewalk.attributes[key] = value
+    lanelets = {"road": road, "sidewalk": sidewalk}
+    return _map(lanelets), lanelets
+
+
 def osm_contents(lanelet2_map: Lanelet2Map) -> str:
     """Write a map as OSM XML, projected around :data:`ORIGIN`, as a map server holds it in its parameters."""
     handle, path = tempfile.mkstemp(suffix=".osm")

@@ -15,6 +15,9 @@ frame of the map:
 
 - ``lanelets_at``, ``lane_of``: the lanelets containing a point, and the one a
   road user drives along.
+- ``drivable``, ``distance_to_drivable_area``, ``against_direction``,
+  ``speed_limit``: what the traffic rules of vehicles allow, i.e. which
+  lanelets vehicles may drive in, and in which direction and how fast.
 - ``lane_coordinates``: arc length along and lateral offset from the centerline
   of a lanelet, and its heading there.
 - ``paths_ahead``: the sequences of lanelets a road user may follow.
@@ -37,6 +40,12 @@ import numpy as np
 
 # Maximum number of paths ahead that are followed through branching lanes
 _MAX_PATHS = 32
+
+# Number of lanelets closest to a point first searched for one that vehicles may drive in, multiplied until one is found
+_NEAREST_LANELETS = 16
+
+# Conversion of the speed limits of the traffic rules, given in km/h, to m/s
+_KMH = 1.0 / 3.6
 
 
 class Lanelet2Map:
@@ -129,17 +138,84 @@ class Lanelet2Map:
             yaw: Heading of the road user.
 
         Returns:
-            Of the lanelets containing the position, the one whose direction is
-            closest to the heading, if it deviates by less than 90°; ``None`` if
-            no lanelet contains the position or the road user drives against all.
+            Of the lanelets containing the position, in their direction and, if
+            the traffic rules allow driving them in both directions, also
+            inverted, the one whose direction is closest to the heading, if it
+            deviates by less than 90°; ``None`` if no lanelet contains the
+            position or the road user drives against all.
         """
         best, best_deviation = None, math.pi / 2.0
         for lanelet in self.lanelets_at(x, y):
-            _, _, heading = self.lane_coordinates(lanelet, x, y)
-            deviation = abs(math.remainder(yaw - heading, 2.0 * math.pi))
-            if deviation < best_deviation:
-                best, best_deviation = lanelet, deviation
+            inverted = lanelet.invert()
+            for oriented in (lanelet, inverted) if self.traffic_rules.canPass(inverted) else (lanelet,):
+                deviation = self._deviation(oriented, x, y, yaw)
+                if deviation < best_deviation:
+                    best, best_deviation = oriented, deviation
         return best
+
+    def drivable(self, lanelet: Any) -> bool:
+        """Decide whether the traffic rules allow vehicles to drive in a lanelet, in either direction.
+
+        Lanelets of other road users, e.g. sidewalks, are not drivable.
+        """
+        return bool(self.traffic_rules.canPass(lanelet) or self.traffic_rules.canPass(lanelet.invert()))
+
+    def distance_to_drivable_area(self, x: float, y: float) -> Optional[float]:
+        """Return the distance of a point to the area of the lanelets vehicles may drive in.
+
+        Args:
+            x, y: Point in the frame of the map.
+
+        Returns:
+            Zero for a point in a drivable lanelet, else the distance to the
+            closest drivable lanelet; ``None`` if the map has no drivable lanelet.
+        """
+        from lanelet2.core import BasicPoint2d
+        from lanelet2.geometry import findNearest
+
+        point, layer = BasicPoint2d(x, y), self.lanelet_map.laneletLayer
+        num_nearest = _NEAREST_LANELETS
+        while True:
+            nearest = findNearest(layer, point, num_nearest)
+            distances = [float(distance) for distance, lanelet in nearest if self.drivable(lanelet)]
+            if distances:
+                return min(distances)
+            if len(nearest) < num_nearest:
+                return None
+            num_nearest *= 4
+
+    def against_direction(self, x: float, y: float, heading: float) -> Optional[bool]:
+        """Decide whether moving along a heading at a point goes against the direction of travel of the lanes there.
+
+        Args:
+            x, y: Point in the frame of the map.
+            heading: Direction of the motion.
+
+        Returns:
+            Whether the heading deviates by 90° or more from every direction the
+            traffic rules allow vehicles to drive the lanelets containing the
+            point in, e.g. against a one-way lane; ``None`` if no drivable
+            lanelet contains the point.
+        """
+        directions = [
+            oriented
+            for lanelet in self.lanelets_at(x, y)
+            for oriented in (lanelet, lanelet.invert())
+            if self.traffic_rules.canPass(oriented)
+        ]
+        if not directions:
+            return None
+        return all(self._deviation(oriented, x, y, heading) >= math.pi / 2.0 for oriented in directions)
+
+    def speed_limit(self, lanelet: Any) -> float:
+        """Return the speed limit of a lanelet in m/s.
+
+        The limit is the one the traffic rules of vehicles in Germany assign:
+        that of a speed limit regulatory element or ``speed_limit`` attribute of
+        the lanelet, else the default of its ``location``, e.g. 50 km/h in urban
+        areas.
+        """
+        return float(self.traffic_rules.speedLimit(lanelet).speedLimit) * _KMH
 
     def lane_coordinates(self, lanelet: Any, x: float, y: float) -> Tuple[float, float, float]:
         """Express a point in coordinates along the centerline of a lanelet.
@@ -201,6 +277,11 @@ class Lanelet2Map:
             for successor in following:
                 pending.append((path + [successor], covered + self.length(successor)))
         return paths
+
+    def _deviation(self, lanelet: Any, x: float, y: float, heading: float) -> float:
+        """Return the absolute angle between a heading and the direction of a lanelet at a point."""
+        _, _, direction = self.lane_coordinates(lanelet, x, y)
+        return abs(math.remainder(heading - direction, 2.0 * math.pi))
 
     def _centerline(self, lanelet: Any) -> np.ndarray:
         """Return the points of the centerline of a lanelet as array of shape ``(n, 2)``.

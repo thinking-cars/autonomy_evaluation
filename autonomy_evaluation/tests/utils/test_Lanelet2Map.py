@@ -9,7 +9,7 @@ import math
 
 import pytest
 from autonomy_evaluation.utils.Lanelet2Map import Lanelet2Map
-from tests.utils.lanelet2_maps import bend, junction, ORIGIN, osm_contents, two_lane_road
+from tests.utils.lanelet2_maps import bend, junction, ORIGIN, osm_contents, road_with_sidewalk, two_lane_road
 
 
 class TestLoading:
@@ -103,3 +103,39 @@ class TestPathsAhead:
         assert s == pytest.approx(50.0, abs=0.1)
         assert d == pytest.approx(0.0, abs=0.05)
         assert heading == pytest.approx(0.5, abs=0.02)
+
+
+class TestTrafficRules:
+    """Tests what the traffic rules of vehicles allow: where, in which direction and how fast to drive."""
+
+    def setup_method(self):
+        """Build a straight road of two one-way lanes and a two-way road with a sidewalk."""
+        self.road, self.road_lanelets = two_lane_road()
+        self.two_way, self.two_way_lanelets = road_with_sidewalk()
+
+    def test_sidewalks_are_not_drivable(self):
+        """Vehicles may drive in road lanelets, but not on sidewalks."""
+        assert self.two_way.drivable(self.two_way_lanelets["road"])
+        assert not self.two_way.drivable(self.two_way_lanelets["sidewalk"])
+
+    def test_distance_to_the_drivable_area(self):
+        """A point on the road is within the drivable area, one on the sidewalk or beside it at its distance."""
+        assert self.two_way.distance_to_drivable_area(50.0, 1.0) == 0.0
+        assert self.two_way.distance_to_drivable_area(50.0, -2.75) == pytest.approx(1.0)
+        assert self.two_way.distance_to_drivable_area(50.0, 4.75) == pytest.approx(3.0)
+
+    def test_driving_against_a_one_way_lane(self):
+        """Driving against the direction of a one-way lane goes against the direction of travel."""
+        assert self.road.against_direction(50.0, 0.0, 0.1) is False
+        assert self.road.against_direction(50.0, 0.0, math.pi) is True
+        assert self.road.against_direction(50.0, -5.0, math.pi) is None
+
+    def test_a_two_way_road_may_be_driven_in_both_directions(self):
+        """A lanelet that may be driven in both directions is never driven against."""
+        assert self.two_way.against_direction(50.0, 0.0, math.pi) is False
+        assert self.two_way.lane_of(50.0, 0.0, math.pi).inverted()
+
+    def test_speed_limit_in_meters_per_second(self):
+        """The speed limit is the default of urban roads, or the one set for the lanelet."""
+        assert self.road.speed_limit(self.road_lanelets["right"]) == pytest.approx(50.0 / 3.6)
+        assert self.two_way.speed_limit(self.two_way_lanelets["road"]) == pytest.approx(30.0 / 3.6)
