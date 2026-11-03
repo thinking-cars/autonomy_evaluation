@@ -62,6 +62,12 @@ class TestDistanceDriven:
         assert distance["_value_"] == pytest.approx(2.0)
         assert distance["standstill_share"] is None
 
+    def test_teleport_is_not_driven(self):
+        """A simulation teleporting the ego vehicle to the start of its scenario does not drive it there."""
+        egos = [{"x": 0.0}, {"x": 1.0}, {"x": 351.0}, {"x": 352.0}]
+
+        assert _evaluate(egos)["distance"]["_value_"] == pytest.approx(2.0)
+
     def test_single_sample_has_no_mean_speed(self):
         """Without time passing, there is no mean speed."""
         assert _evaluate([{"x": 0.0, "vel_lon": 5.0}])["distance"]["mean_speed"] is None

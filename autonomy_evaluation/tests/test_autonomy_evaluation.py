@@ -615,6 +615,7 @@ class TestConfigureEvaluation:
             "configurable.dynamics.speed.scale",
             "configurable.dynamics.speed.thresholds",
             "configurable.limits",
+            "configurable.max_jump_speed",
             "configurable.max_sample_interval",
             "configurable.metrics",
         ]

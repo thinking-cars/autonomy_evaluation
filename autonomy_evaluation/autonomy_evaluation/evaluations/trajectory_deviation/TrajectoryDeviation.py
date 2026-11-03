@@ -32,9 +32,10 @@ See :mod:`~autonomy_evaluation.evaluations.trajectory_deviation.DeviationMetrics
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from autonomy_evaluation.evaluations.Evaluation import Evaluation
+from autonomy_evaluation.evaluations.Metric import Sample
 from autonomy_evaluation.evaluations.trajectory_deviation.DeviationMetrics import (
     Consistency,
     Deviations,
@@ -44,7 +45,7 @@ from autonomy_evaluation.evaluations.trajectory_deviation.DeviationMetrics impor
     Longitudinal,
     Velocity,
 )
-from autonomy_evaluation.evaluations.trajectory_deviation.trajectories import DRIVEN, PLANNED, SOURCES
+from autonomy_evaluation.evaluations.trajectory_deviation.trajectories import DRIVEN, PLANNED, SOURCES, state_pose
 
 
 class TrajectoryDeviation(Evaluation):
@@ -83,6 +84,11 @@ class TrajectoryDeviation(Evaluation):
             are compared. ``time_step``: seconds between the compared times.
         """
         return {"evaluated_source": PLANNED, "reference_source": DRIVEN, "horizon": 5.0, "time_step": 0.1}
+
+    def sample_position(self, sample: Sample) -> Optional[Tuple[float, float]]:
+        """Report the position of the reference ego vehicle, so that a teleport splits the driven trajectories."""
+        x, y, _, _ = state_pose(sample["reference"])
+        return x, y
 
     def configure(self, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Apply a configuration, checking that the sources are known and the times positive.

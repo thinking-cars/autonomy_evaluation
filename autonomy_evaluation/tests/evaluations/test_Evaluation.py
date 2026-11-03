@@ -215,7 +215,7 @@ class TestFinalize:
         assert results["scenes"]["scene_a"] == {
             "num_samples": 2,
             "sample_ids": ["0", "1"],
-            "sampling": {"num_sequences": 1, "period": None, "num_gaps": 0, "max_interval": None},
+            "sampling": {"num_sequences": 1, "period": None, "num_gaps": 0, "max_interval": None, "num_jumps": 0},
             "metrics": {"num_predictions": 3, "num_labels": 4},
         }
         assert results["scenes"]["scene_b"]["metrics"] == {"num_predictions": 4, "num_labels": 5}
@@ -701,6 +701,7 @@ class TestConfiguration:
         """The configuration selects all metrics and holds the entries of each, nested under its group."""
         assert _ComposedEvaluation().config_defaults() == {
             "max_sample_interval": 1.0,
+            "max_jump_speed": 100.0,
             "limits": [],
             "unit": "m",
             "metrics": ["num_objects", "proximity", "objects_per_sample", "speed"],
@@ -748,7 +749,7 @@ class TestConfiguration:
 
     def test_evaluation_without_building_blocks_is_configured_too(self):
         """An evaluation computing its metrics itself has the configuration every evaluation has."""
-        assert CountingEvaluation().config == {"max_sample_interval": 1.0, "limits": []}
+        assert CountingEvaluation().config == {"max_sample_interval": 1.0, "max_jump_speed": 100.0, "limits": []}
 
     def test_flattened_configuration_names_nested_entries_by_their_joined_keys(self):
         """ROS parameters name nested entries by their keys joined with '.', lists are values."""
@@ -783,7 +784,7 @@ class TestResultsDescription:
         }
         assert results["inputs"]["map"]["role"] == "context"
         assert results["config"] == evaluation.config
-        assert results["sampling"] == {"num_sequences": 2, "period": 0.5, "num_gaps": 0, "max_interval": 0.5}
+        assert results["sampling"] == {"num_sequences": 2, "period": 0.5, "num_gaps": 0, "max_interval": 0.5, "num_jumps": 0}
 
     def test_inputs_of_an_evaluation_without_building_blocks_have_roles(self):
         """Inputs are evaluated, ground truth is the reference."""

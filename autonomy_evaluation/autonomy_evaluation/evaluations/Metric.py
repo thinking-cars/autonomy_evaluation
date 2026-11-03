@@ -203,15 +203,21 @@ class Aggregation:
         """Split the samples into contiguous sequences.
 
         Two consecutive samples belong to the same sequence if they belong to
-        the same scene, are in order and at most the configured
-        ``max_sample_interval`` apart (see
+        the same scene, are in order, at most the configured
+        ``max_sample_interval`` apart and their positions, if known, do not
+        jump faster than ``max_jump_speed`` (see
         :func:`~autonomy_evaluation.evaluations.sampling.split_into_sequences`).
 
         Returns:
             The sequences of :attr:`entries`, each in recording order.
         """
         return self.memo(
-            "sequences", lambda: split_into_sequences(self.entries, self.config.get("max_sample_interval", float("inf")))
+            "sequences",
+            lambda: split_into_sequences(
+                self.entries,
+                self.config.get("max_sample_interval", float("inf")),
+                self.config.get("max_jump_speed", float("inf")),
+            ),
         )
 
     def memo(self, key: Hashable, compute: Callable[[], Any]) -> Any:

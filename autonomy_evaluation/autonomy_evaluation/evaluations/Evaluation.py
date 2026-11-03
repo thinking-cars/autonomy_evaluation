@@ -53,6 +53,8 @@ from tf2_ros import BufferInterface
 _BASE_CONFIG: Dict[str, Any] = {
     # seconds between two consecutive samples beyond which they belong to different sequences (see sampling.py)
     "max_sample_interval": 1.0,
+    # speed in m/s beyond which the position of the samples jumps, e.g. a teleport, starting a new sequence (see sampling.py)
+    "max_jump_speed": 100.0,
     # optional limits judging the metrics as passed or failed, none by default (see limits.py)
     "limits": [],
 }
@@ -217,6 +219,9 @@ class Evaluation(ABC):
 
         * ``max_sample_interval``: seconds between two consecutive samples
           beyond which they belong to different sequences (default ``1.0``),
+        * ``max_jump_speed``: speed in m/s beyond which the position of the
+          samples (:meth:`sample_position`) jumps between two consecutive
+          samples, which then belong to different sequences (default ``100.0``),
         * ``limits``: optional limits judging the metrics as passed or
           failed, see :mod:`~autonomy_evaluation.evaluations.limits` (none by
           default),
@@ -682,8 +687,27 @@ class Evaluation(ABC):
         else:
             metrics = self.compute_sample_metrics(sample_id=sample_id, **messages)
         entry: Dict[str, Any] = {"sample_id": sample_id, "scene_id": scene_id, "stamp": stamp, "metrics": metrics}
+        if self.available_metrics() and self._last_sample is not None:
+            entry["position"] = self.sample_position(self._last_sample)
         self._sample_results.append(entry)
         return entry
+
+    def sample_position(self, sample: Sample) -> Optional[Tuple[float, float]]:
+        """Report the position of a sample, e.g. of the ego vehicle, whose jumps split the samples into sequences.
+
+        A simulation may teleport the ego vehicle, e.g. to the start of a
+        scenario, which no metric over time should take as driven. The samples
+        before and after such a jump belong to different sequences (see
+        :mod:`~autonomy_evaluation.evaluations.sampling`).
+
+        Args:
+            sample: Messages of the sample, with the data the metrics derived from them.
+
+        Returns:
+            The position ``(x, y)`` in meters, in a frame that stays the same
+            over the samples; ``None`` by default, for an evaluation without positions.
+        """
+        return None
 
     def sample_results_by_scene(self) -> Dict[str, List[Dict[str, Any]]]:
         """Group the recorded samples by the scene of the dataset they belong to.
@@ -722,7 +746,7 @@ class Evaluation(ABC):
             samples it did evaluate, marked as ``"complete": false`` so that
             they are not mistaken for the results over the whole dataset.
         """
-        max_sample_interval = self.config["max_sample_interval"]
+        max_sample_interval, max_jump_speed = self.config["max_sample_interval"], self.config["max_jump_speed"]
         aggregated = self.compute_aggregated_metrics(self._sample_results)
         scenes = self.sample_results_by_scene()
         results = {
@@ -732,7 +756,7 @@ class Evaluation(ABC):
             "complete": complete,
             "num_samples": len(self._sample_results),
             "num_scenes": len(scenes),
-            "sampling": sampling_statistics(self._sample_results, max_sample_interval),
+            "sampling": sampling_statistics(self._sample_results, max_sample_interval, max_jump_speed),
             "inputs": {
                 name: {
                     "type": _type_name(declared.msg_type),
@@ -749,7 +773,7 @@ class Evaluation(ABC):
                 scene_id: {
                     "num_samples": len(entries),
                     "sample_ids": [entry["sample_id"] for entry in entries],
-                    "sampling": sampling_statistics(entries, max_sample_interval),
+                    "sampling": sampling_statistics(entries, max_sample_interval, max_jump_speed),
                     "metrics": self.compute_aggregated_metrics(entries),
                 }
                 for scene_id, entries in scenes.items()

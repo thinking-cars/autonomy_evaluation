@@ -183,6 +183,7 @@ Metrics are computed based on the following assumptions:
 | `progress.distance.standstill_speed` | `0.1` | speed in `m/s` below which the ego vehicle stands still |
 | `progress.route.goal_tolerance` | `3.0` | distance in meters along the route within which the destination counts as reached, and by which it may move while it is still the same |
 | `max_sample_interval` | `1.0` | seconds between two consecutive samples beyond which they belong to different sequences |
+| `max_jump_speed` | `100.0` | speed in `m/s` beyond which the position jumps between two consecutive samples, e.g. a teleport, which then belong to different sequences |
 
 ```yaml
 /**:
@@ -286,6 +287,7 @@ Metrics are computed based on the following assumptions:
 | `displacement.horizons` | `[1.0, 3.0]` | seconds after the sample at which the displacement is reported on its own |
 | `displacement.miss_threshold` | `2.0` | displacement in meters beyond which a sample misses the reference |
 | `max_sample_interval` | `1.0` | seconds between two consecutive samples beyond which they belong to different sequences |
+| `max_jump_speed` | `100.0` | speed in `m/s` beyond which the position jumps between two consecutive samples, e.g. a teleport, which then belong to different sequences |
 
 <details>
 <summary>Output metrics</summary>
@@ -375,6 +377,7 @@ An evaluation without metric building blocks, e.g. one implemented before they e
 Each evaluation is configured by nested entries with default values, which hold
 
 - `max_sample_interval`: seconds between two consecutive samples beyond which they belong to different sequences (default `1.0`),
+- `max_jump_speed`: speed in `m/s` beyond which the position of the samples jumps between two consecutive samples, which then belong to different sequences (default `100.0`, see [Sequences of samples](#sequences-of-samples)),
 - `limits`: optional limits judging the metrics as passed or failed (none by default, see [Limits](#limits)),
 - the entries the evaluation shares among all its metrics,
 - `metrics`: the selected metrics, each by the name of a metric, of a group of metrics, or of a metric of a group as `<group>.<metric>`; all metrics by default,
@@ -407,7 +410,7 @@ The node logs whether the metrics over all samples passed their limits once the 
 
 #### Sequences of samples
 
-Most metrics treat every sample on its own, e.g. the average precision of a detector. Others depend on the order of the samples and the time between them, e.g. the jerk of the ego vehicle or the time between two road users passing the same spot. They are computed on contiguous sequences of samples: two consecutive samples belong to the same sequence if they belong to the same scene, the later one is stamped after the earlier one, and they are at most `max_sample_interval` seconds apart. Within a sequence, an interval of more than 1.5 times the sampling period is a gap, i.e. samples are missing, e.g. because the system under test skipped them or the evaluation did not keep up with a live system.
+Most metrics treat every sample on its own, e.g. the average precision of a detector. Others depend on the order of the samples and the time between them, e.g. the jerk of the ego vehicle or the time between two road users passing the same spot. They are computed on contiguous sequences of samples: two consecutive samples belong to the same sequence if they belong to the same scene, the later one is stamped after the earlier one, they are at most `max_sample_interval` seconds apart, and, for an evaluation that reports a position per sample, the position does not jump faster than `max_jump_speed`, e.g. when a simulation teleports the ego vehicle to the start of a scenario. The closed-loop evaluation reports the position of the ego vehicle, the trajectory deviation that of the `reference`. Within a sequence, an interval of more than 1.5 times the sampling period is a gap, i.e. samples are missing, e.g. because the system under test skipped them or the evaluation did not keep up with a live system.
 
 The results describe how regularly the samples were evaluated under `sampling`, over all samples and per scene:
 
@@ -417,3 +420,4 @@ The results describe how regularly the samples were evaluated under `sampling`, 
 | `period` | Median interval between consecutive samples of a sequence in seconds, `null` without any interval. |
 | `num_gaps` | Number of intervals of more than 1.5 times the sampling period of their sequence. |
 | `max_interval` | Longest interval between consecutive samples of a sequence in seconds, `null` without any interval. |
+| `num_jumps` | Number of jumps of the position between consecutive samples that split sequences, e.g. teleports of the ego vehicle. |

@@ -15,7 +15,11 @@ consecutive samples belong to the same sequence if
 - they belong to the same scene, as far as their scenes are known,
 - the later one is stamped after the earlier one, as a dataset may continue
   with a scene that was recorded before the scene played before it, and
-- they are at most ``max_sample_interval`` seconds apart.
+- they are at most ``max_sample_interval`` seconds apart, and
+- where the evaluation reports a position per sample, e.g. that of the ego
+  vehicle, the position does not jump between them faster than
+  ``max_jump_speed``, as when a simulation teleports the ego vehicle to the
+  start of a scenario.
 
 Within a sequence, an interval of more than :data:`GAP_FACTOR` times the
 sampling period is a gap: samples are missing, e.g. because a system under test
@@ -26,6 +30,7 @@ accurate.
 
 from __future__ import annotations
 
+import math
 import statistics
 from typing import Any, Dict, List, Optional
 
@@ -33,14 +38,19 @@ from typing import Any, Dict, List, Optional
 GAP_FACTOR = 1.5
 
 
-def split_into_sequences(entries: List[Dict[str, Any]], max_sample_interval: float) -> List[List[Dict[str, Any]]]:
+def split_into_sequences(
+    entries: List[Dict[str, Any]], max_sample_interval: float, max_jump_speed: float = math.inf
+) -> List[List[Dict[str, Any]]]:
     """Split recorded samples into contiguous sequences.
 
     Args:
         entries: Recorded samples, each holding its ``scene_id`` and ``stamp``
-            (seconds, ``None`` if unknown), in the order they were recorded.
+            (seconds, ``None`` if unknown) and, optionally, its ``position``
+            ``(x, y)``, in the order they were recorded.
         max_sample_interval: Seconds between two consecutive samples beyond
             which they belong to different sequences.
+        max_jump_speed: Speed in m/s beyond which the position jumps between
+            two consecutive samples, which then belong to different sequences.
 
     Returns:
         The sequences, each a list of consecutive samples, in recording order.
@@ -50,7 +60,11 @@ def split_into_sequences(entries: List[Dict[str, Any]], max_sample_interval: flo
 
     sequences: List[List[Dict[str, Any]]] = []
     for entry in entries:
-        if sequences and _continues(sequences[-1][-1], entry, max_sample_interval):
+        if (
+            sequences
+            and _continues(sequences[-1][-1], entry, max_sample_interval)
+            and not _jumps(sequences[-1][-1], entry, max_jump_speed)
+        ):
             sequences[-1].append(entry)
         else:
             sequences.append([entry])
@@ -64,6 +78,16 @@ def _continues(previous: Dict[str, Any], entry: Dict[str, Any], max_sample_inter
     if previous.get("stamp") is None or entry.get("stamp") is None:
         return True
     return 0.0 < entry["stamp"] - previous["stamp"] <= max_sample_interval
+
+
+def _jumps(previous: Dict[str, Any], entry: Dict[str, Any], max_jump_speed: float) -> bool:
+    """Decide whether the position jumps from a sample to the next one, faster than any road user drives."""
+    if previous.get("position") is None or entry.get("position") is None:
+        return False
+    if previous.get("stamp") is None or entry.get("stamp") is None or entry["stamp"] <= previous["stamp"]:
+        return False
+    distance = math.hypot(entry["position"][0] - previous["position"][0], entry["position"][1] - previous["position"][1])
+    return distance > max_jump_speed * (entry["stamp"] - previous["stamp"])
 
 
 def intervals(sequence: List[Dict[str, Any]]) -> List[float]:
@@ -89,24 +113,29 @@ def sampling_period(sequence: List[Dict[str, Any]]) -> Optional[float]:
     return statistics.median(sequence_intervals) if sequence_intervals else None
 
 
-def sampling_statistics(entries: List[Dict[str, Any]], max_sample_interval: float) -> Dict[str, Any]:
+def sampling_statistics(
+    entries: List[Dict[str, Any]], max_sample_interval: float, max_jump_speed: float = math.inf
+) -> Dict[str, Any]:
     """Describe how regularly the recorded samples were evaluated.
 
     Args:
         entries: Recorded samples, in the order they were recorded.
         max_sample_interval: Seconds between two consecutive samples beyond
             which they belong to different sequences.
+        max_jump_speed: Speed in m/s beyond which the position jumps between
+            two consecutive samples, which then belong to different sequences.
 
     Returns:
-        ``{"num_sequences", "period", "num_gaps", "max_interval"}``: the number
-        of contiguous sequences, the median interval between the consecutive
-        samples of all sequences in seconds, the number of gaps, i.e. intervals
-        of more than :data:`GAP_FACTOR` times the sampling period of their
-        sequence, and the longest interval within a sequence in seconds; period
+        ``{"num_sequences", "period", "num_gaps", "max_interval", "num_jumps"}``:
+        the number of contiguous sequences, the median interval between the
+        consecutive samples of all sequences in seconds, the number of gaps,
+        i.e. intervals of more than :data:`GAP_FACTOR` times the sampling period
+        of their sequence, the longest interval within a sequence in seconds,
+        and the number of jumps of the position that split sequences; period
         and longest interval are ``None`` without any interval.
     """
 
-    sequences = split_into_sequences(entries, max_sample_interval)
+    sequences = split_into_sequences(entries, max_sample_interval, max_jump_speed)
     all_intervals: List[float] = []
     num_gaps = 0
     for sequence in sequences:
@@ -120,4 +149,8 @@ def sampling_statistics(entries: List[Dict[str, Any]], max_sample_interval: floa
         "period": statistics.median(all_intervals) if all_intervals else None,
         "num_gaps": num_gaps,
         "max_interval": max(all_intervals) if all_intervals else None,
+        "num_jumps": sum(
+            _continues(previous, entry, max_sample_interval) and _jumps(previous, entry, max_jump_speed)
+            for previous, entry in zip(entries, entries[1:])
+        ),
     }

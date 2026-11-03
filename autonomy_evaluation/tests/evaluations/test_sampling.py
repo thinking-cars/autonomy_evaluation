@@ -51,6 +51,22 @@ class TestSplitIntoSequences:
 
         assert _sample_ids(split_into_sequences(entries, max_sample_interval=1.0)) == [["0", "1"], ["2"]]
 
+    def test_a_jump_of_the_position_starts_a_new_sequence(self):
+        """A simulation teleporting the ego vehicle 350 m within 0.05 s, e.g. to the start of a scenario, is no drive."""
+        entries = _entries(("a", 0.0), ("a", 0.05), ("a", 0.1), ("a", 0.15))
+        for entry, x in zip(entries, (0.0, 0.5, 350.5, 351.0)):
+            entry["position"] = (x, 0.0)
+
+        assert _sample_ids(split_into_sequences(entries, 1.0, max_jump_speed=100.0)) == [["0", "1"], ["2", "3"]]
+        assert sampling_statistics(entries, 1.0, max_jump_speed=100.0)["num_jumps"] == 1
+
+    def test_samples_without_position_never_jump(self):
+        """An evaluation that reports no positions splits its samples by time and scene only."""
+        entries = _entries(("a", 0.0), ("a", 0.05))
+        entries[0]["position"] = (0.0, 0.0)
+
+        assert _sample_ids(split_into_sequences(entries, 1.0, max_jump_speed=100.0)) == [["0", "1"]]
+
     def test_samples_without_stamp_continue_the_sequence(self):
         """Without stamps no interval is known, so the samples of a scene stay together."""
         entries = _entries(("a", None), ("a", None), ("b", None))
@@ -97,4 +113,5 @@ class TestSamplingStatistics:
             "period": None,
             "num_gaps": 0,
             "max_interval": None,
+            "num_jumps": 0,
         }

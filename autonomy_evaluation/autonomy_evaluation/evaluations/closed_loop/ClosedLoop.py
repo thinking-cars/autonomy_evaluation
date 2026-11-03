@@ -35,7 +35,7 @@ Every metric over time is computed per contiguous sequence of samples, see
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from autonomy_evaluation.evaluations.closed_loop.ComfortMetrics import Acceleration, EgoMotion, Jerk, YawRate
 from autonomy_evaluation.evaluations.closed_loop.CriticalityMetrics import (
@@ -46,8 +46,9 @@ from autonomy_evaluation.evaluations.closed_loop.CriticalityMetrics import (
 )
 from autonomy_evaluation.evaluations.closed_loop.ProgressMetrics import DistanceDriven, RouteProgress
 from autonomy_evaluation.evaluations.closed_loop.RuleComplianceMetrics import DrivableArea, DrivingDirection, SpeedLimit
+from autonomy_evaluation.evaluations.closed_loop.states import ego_state
 from autonomy_evaluation.evaluations.Evaluation import Evaluation
-from autonomy_evaluation.evaluations.Metric import MetricGroup
+from autonomy_evaluation.evaluations.Metric import MetricGroup, Sample
 
 
 class ClosedLoop(Evaluation):
@@ -80,6 +81,11 @@ class ClosedLoop(Evaluation):
             MetricGroup("progress", [DistanceDriven(), RouteProgress()]),
             MetricGroup("comfort", [Acceleration(), Jerk(), YawRate()]),
         ]
+
+    def sample_position(self, sample: Sample) -> Optional[Tuple[float, float]]:
+        """Report the position of the ego vehicle, so that a teleport, e.g. to the start of a scenario, splits the sequence."""
+        ego = ego_state(sample)
+        return ego.x, ego.y
 
     def default_config(self) -> Dict[str, Any]:
         """Configure how the other road users are read, shared by all metrics involving them.
