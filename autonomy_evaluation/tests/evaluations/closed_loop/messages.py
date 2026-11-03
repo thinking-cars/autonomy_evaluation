@@ -17,6 +17,7 @@ from typing import Optional, Sequence, Tuple
 from geometry_msgs.msg import TransformStamped
 from perception_msgs.msg import EGO, EgoData, HEXAMOTION, Object, ObjectList, ObjectState
 from perception_msgs_utils import initialize_state, set_continuous_state_covariance_to_unknown_at
+from route_planning_msgs.msg import LaneElement, Route, RouteElement
 from tf2_ros import Buffer
 
 # A car of 4 m length and 2 m width
@@ -117,6 +118,33 @@ def road_user(
 def object_list(objects: Sequence[Object] = (), stamp: float = 0.0, frame_id: str = "map") -> ObjectList:
     """Wrap road users in an ``ObjectList``."""
     return _stamped(ObjectList(objects=list(objects)), stamp, frame_id)
+
+
+def route(
+    points: Sequence[Tuple[float, float]],
+    destination: Optional[Tuple[float, float]] = None,
+    stamp: float = 0.0,
+    frame_id: str = "map",
+    lane_offsets: Sequence[float] = (0.0,),
+    suggested_lane: int = 0,
+) -> Route:
+    """Build a route through the given points, towards a destination, by default the last point.
+
+    Each point is a route element whose lanes lie at the given lateral offsets in y, of which the
+    suggested lane is the given one.
+    """
+    message = Route()
+    for x, y in points:
+        lanes = []
+        for offset in lane_offsets:
+            lane = LaneElement()
+            lane.reference_pose.position.x, lane.reference_pose.position.y = float(x), float(y + offset)
+            lanes.append(lane)
+        message.route_elements.append(RouteElement(lane_elements=lanes, suggested_lane_idx=suggested_lane))
+    message.destination.x, message.destination.y = (float(value) for value in (destination or points[-1]))
+    message.starting_route_element_idx = 0
+    message.destination_route_element_idx = len(points) - 1
+    return _stamped(message, stamp, frame_id)
 
 
 def static_tf_buffer(parent: str, child: str, x: float = 0.0, y: float = 0.0, yaw: float = 0.0) -> Buffer:

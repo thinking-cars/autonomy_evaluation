@@ -23,7 +23,8 @@ Metrics, grouped and selectable via ``metrics``:
 - ``rule_compliance``: ``drivable_area``, ``driving_direction`` and
   ``speed_limit`` of the ego vehicle, checked against the Lanelet2 map
   (:mod:`~autonomy_evaluation.evaluations.closed_loop.RuleComplianceMetrics`).
-- ``progress``: ``distance`` the ego vehicle drives
+- ``progress``: ``distance`` the ego vehicle drives and its progress along
+  its ``route``
   (:mod:`~autonomy_evaluation.evaluations.closed_loop.ProgressMetrics`).
 - ``comfort``: ``acceleration``, ``jerk`` and ``yaw_rate`` of the ego vehicle
   (:mod:`~autonomy_evaluation.evaluations.closed_loop.ComfortMetrics`).
@@ -43,7 +44,7 @@ from autonomy_evaluation.evaluations.closed_loop.CriticalityMetrics import (
     TimeHeadway,
     TimeToCollision,
 )
-from autonomy_evaluation.evaluations.closed_loop.ProgressMetrics import DistanceDriven
+from autonomy_evaluation.evaluations.closed_loop.ProgressMetrics import DistanceDriven, RouteProgress
 from autonomy_evaluation.evaluations.closed_loop.RuleComplianceMetrics import DrivableArea, DrivingDirection, SpeedLimit
 from autonomy_evaluation.evaluations.Evaluation import Evaluation
 from autonomy_evaluation.evaluations.Metric import MetricGroup
@@ -55,10 +56,11 @@ class ClosedLoop(Evaluation):
     See the module docstring for the metrics and their inputs.
     """
 
-    VERSION = "1.1.0"
+    VERSION = "1.2.0"
     RELEASE_NOTES = {
         "1.0.0": "Initial implementation",
         "1.1.0": "Rule compliance metrics: drivable area, driving direction and speed limit; progress: distance driven",
+        "1.2.0": "Progress along the planned route",
     }
 
     def __init__(self) -> None:
@@ -75,7 +77,7 @@ class ClosedLoop(Evaluation):
             EgoMotion(),
             MetricGroup("criticality", [Collision(), TimeToCollision(), TimeHeadway(), PostEncroachmentTime()]),
             MetricGroup("rule_compliance", [DrivableArea(), DrivingDirection(), SpeedLimit()]),
-            MetricGroup("progress", [DistanceDriven()]),
+            MetricGroup("progress", [DistanceDriven(), RouteProgress()]),
             MetricGroup("comfort", [Acceleration(), Jerk(), YawRate()]),
         ]
 

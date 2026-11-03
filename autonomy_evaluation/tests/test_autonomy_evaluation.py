@@ -317,6 +317,7 @@ def _evaluating_node(requests_samples: bool) -> SimpleNamespace:
         samples_awaiting_scene=deque(),
         samples_of_current_scene=[],
         num_skipped_samples=0,
+        latest_messages={},
         evaluation_timeout=60.0,
         evaluation_deadline=None,
         results_path="",
@@ -355,6 +356,17 @@ class TestEvaluateSample:
         AutonomyEvaluation.evaluate_sample(node, _NEXT_SCENE[0], _sample_messages(_NEXT_SCENE[0]))
 
         assert node.evaluation_handler.recorded_messages["map"] == "map of the scene"
+
+    def test_passes_the_latest_message_of_inputs_not_matched_by_their_stamps(self):
+        """A route planned independently of the samples joins every sample with its latest message."""
+        node = _evaluating_node(requests_samples=False)
+        node.latest_messages = {"route": None}
+
+        AutonomyEvaluation.receive_latest_message(node, "route", "first route")
+        AutonomyEvaluation.receive_latest_message(node, "route", "replanned route")
+        AutonomyEvaluation.evaluate_sample(node, _NEXT_SCENE[0], _sample_messages(_NEXT_SCENE[0]))
+
+        assert node.evaluation_handler.recorded_messages["route"] == "replanned route"
 
     def test_passes_the_stamp_of_the_sample_in_seconds(self):
         """Metrics that depend on the time between samples, e.g. a jerk, read the stamp of each sample."""
@@ -940,6 +952,7 @@ def _scene_separating_node(requests_samples: bool = False) -> SimpleNamespace:
         separates_scenes=False,
         samples_of_current_scene=[],
         num_separated_scenes=0,
+        latest_messages={},
         get_logger=lambda logger=_FakeLogger(): logger,
     )
     node.end_scene = partial(AutonomyEvaluation.end_scene, node)
@@ -1027,6 +1040,15 @@ class TestNextScene:
         AutonomyEvaluation.finalize_evaluation(node)
 
         assert [entry["scene_id"] for entry in entries] == [None, None]
+
+    def test_latest_messages_belong_to_the_scene_that_ended(self):
+        """The route of a scenario is not passed with the samples of the next one."""
+        node = _scene_separating_node()
+        node.latest_messages = {"route": "route of the first scenario"}
+
+        AutonomyEvaluation.next_scene_callback(node, Trigger.Request(), Trigger.Response())
+
+        assert node.latest_messages == {"route": None}
 
     def test_rejects_separating_the_scenes_of_the_dataset(self):
         """With the dataset as sample source, the dataset reports the scenes of its samples instead."""

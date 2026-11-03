@@ -1,1 +1,8 @@
 autonomy_datasets
+route_planning_msgs_rviz_plugins
+route_planning_msgs_utils
+tf2_route_planning_msgs
+tf2_trajectory_planning_msgs
+trajectory_planning_msgs
+trajectory_planning_msgs_rviz_plugins
+trajectory_planning_msgs_utils

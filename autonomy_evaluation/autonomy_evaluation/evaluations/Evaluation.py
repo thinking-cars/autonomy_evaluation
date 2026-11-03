@@ -440,12 +440,12 @@ class Evaluation(ABC):
         return self._validated(inputs)
 
     def _validated(self, inputs: Dict[str, Input]) -> Dict[str, Input]:
-        """Check that the inputs require a topic and are only published next to topics that are read."""
-        if all(declared.optional or declared.static for declared in inputs.values()):
+        """Check that the inputs require a synchronized topic and are only published next to topics that are read."""
+        if all(declared.optional or not declared.synchronized for declared in inputs.values()):
             raise ValueError(f"Evaluation '{self.name}' requires no topic to evaluate")
         for name, declared in inputs.items():
             source = inputs.get(declared.next_to[0]) if declared.next_to is not None else None
-            if declared.next_to is not None and (source is None or source.static or declared.next_to[0] == name):
+            if declared.next_to is not None and (source is None or not source.synchronized or declared.next_to[0] == name):
                 raise ValueError(f"Evaluation '{self.name}' derives the topic of '{name}' from that of '{declared.next_to[0]}'")
         return inputs
 
@@ -738,6 +738,7 @@ class Evaluation(ABC):
                     "type": _type_name(declared.msg_type),
                     "role": declared.role,
                     "optional": declared.optional,
+                    "latest": declared.latest,
                     "topic": self.input_topics.get(name),
                 }
                 for name, declared in self.inputs().items()

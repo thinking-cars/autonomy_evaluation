@@ -454,20 +454,23 @@ class AutonomyEvaluation(Node):
         # the samples to evaluate by their stamp; a sample only waits for the message of an
         # optional topic while that topic is published
         self.unpublished_optional_topics: set[str] = set()
+        synchronized = {name: declared for name, declared in inputs.items() if declared.synchronized}
         self.message_synchronizer = SampleSynchronizer(
-            topics=list(inputs),
+            topics=list(synchronized),
             callback=self.evaluate_sample,
             queue_size=_SYNCHRONIZER_QUEUE_SIZE,
             tolerance=self.sync_tolerance,
-            optional_topics=[name for name, declared in inputs.items() if declared.optional],
+            optional_topics=[name for name, declared in synchronized.items() if declared.optional],
             expects_message=self.is_published,
         )
+        # the latest message of each input that is not matched with the others by its stamp, passed with every sample
+        self.latest_messages: dict[str, Any] = {name: None for name, declared in inputs.items() if declared.latest}
         derived_topics = {name: declared.next_to for name, declared in inputs.items() if declared.next_to is not None}
         for name, declared in inputs.items():
             self.data_subscriptions[name] = self.create_subscription(
                 declared.msg_type,
                 self.input_topic(name, derived_topics),
-                partial(self.receive_message, name),
+                partial(self.receive_latest_message if declared.latest else self.receive_message, name),
                 qos_profile=QoSProfile(
                     reliability=ReliabilityPolicy.RELIABLE,
                     durability=DurabilityPolicy.VOLATILE,
@@ -481,7 +484,9 @@ class AutonomyEvaluation(Node):
         }
         for role in ROLES:
             topics = ", ".join(
-                f"'{name}' from '{evaluation_handler.input_topics[name]}'" + (" (optional)" if declared.optional else "")
+                f"'{name}' from '{evaluation_handler.input_topics[name]}'"
+                + (" (latest message)" if declared.latest else "")
+                + (" (optional)" if declared.optional else "")
                 for name, declared in declared_inputs.items()
                 if declared.role == role and name in evaluation_handler.input_topics
             )
@@ -491,11 +496,11 @@ class AutonomyEvaluation(Node):
         # Messages without a header are stamped when they are received, which the messages of
         # other inputs can only match within a tolerance
         unstamped_inputs = [
-            name for name, declared in inputs.items() if "header" not in declared.msg_type.get_fields_and_field_types()
+            name for name, declared in synchronized.items() if "header" not in declared.msg_type.get_fields_and_field_types()
         ]
         if unstamped_inputs:
             self.get_logger().info(f"Stamping the messages of {unstamped_inputs} on reception, as they carry no header")
-            if len(inputs) > 1 and not self.sync_tolerance:
+            if len(synchronized) > 1 and not self.sync_tolerance:
                 self.get_logger().warn(
                     f"Messages of {unstamped_inputs} can only be matched with those of other inputs if they are "
                     "received at exactly their stamp, set 'sync_tolerance' to match them within a tolerance"
@@ -986,6 +991,8 @@ class AutonomyEvaluation(Node):
         self.separates_scenes = True
         num_samples = len(self.samples_of_current_scene)
         scene_id = self.end_scene()
+        # the latest messages, e.g. the route, belong to the scene that ended
+        self.latest_messages = dict.fromkeys(self.latest_messages)
         response.success = True
         if scene_id is None:
             response.message = "No sample was evaluated since the last scene ended, the following samples form the next scene"
@@ -1077,11 +1084,21 @@ class AutonomyEvaluation(Node):
             stamp = self.get_clock().now().seconds_nanoseconds()
         self.message_synchronizer.add(name, message, stamp)
 
+    def receive_latest_message(self, name: str, message: Any):
+        """Keeps the latest message of an input that is passed with every sample instead of being matched by its stamp
+
+        Args:
+            name (str): input name the message was received on
+            message (Any): received message
+        """
+        self.latest_messages[name] = message
+
     def evaluate_sample(self, stamp: Stamp, messages: dict[str, Any]):
         """Evaluates a single sample once the messages of all its inputs have been received
 
         The messages are passed to the evaluation by the names of their inputs, which match the
-        parameters of its ``compute_sample_metrics``, together with the current values of the static
+        parameters of its ``compute_sample_metrics``, together with the latest messages of the inputs
+        that are not matched by their stamps, e.g. a route, and the current values of the static
         inputs, e.g. the map. The message of an optional input whose topic is not published is None.
 
         Samples are identified by the stamp of their message of the first input, which is the
@@ -1095,7 +1112,7 @@ class AutonomyEvaluation(Node):
         sample_id = f"{stamp[0]}.{stamp[1]:09d}"
         self.get_logger().debug(f"Evaluating sample '{sample_id}'")
 
-        messages = {**messages, **self.static_messages()}
+        messages = {**messages, **self.latest_messages, **self.static_messages()}
         try:
             result = self.evaluation_handler.record_sample(sample_id=sample_id, stamp=_to_nanoseconds(stamp) * 1e-9, **messages)
         except ValueError as exception:

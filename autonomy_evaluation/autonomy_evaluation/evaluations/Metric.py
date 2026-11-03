@@ -73,6 +73,11 @@ class Input:
             passes with every sample, e.g. the
             :class:`~autonomy_evaluation.utils.Lanelet2Map.Lanelet2Map` of the
             current scene. Its ``msg_type`` is the type of that context.
+        latest: Whether the input is a topic whose latest message the node
+            passes with every sample, instead of matching its messages with
+            those of the other inputs by their stamps, e.g. a route that is
+            planned independently of the samples. Its message is ``None`` until
+            the first one is received; a sample never waits for it.
     """
 
     msg_type: Any
@@ -80,13 +85,21 @@ class Input:
     optional: bool = False
     next_to: Optional[Tuple[str, str]] = None
     static: bool = False
+    latest: bool = False
 
     def __post_init__(self) -> None:
-        """Reject a role that is none of :data:`ROLES`, and a static input published next to a topic."""
+        """Reject a role that is none of :data:`ROLES`, a static input published next to a topic or read as topic."""
         if self.role not in ROLES:
             raise ValueError(f"Input role '{self.role}' is none of {list(ROLES)}")
         if self.static and self.next_to is not None:
             raise ValueError("A static input is no topic, so it cannot be published next to one")
+        if self.static and self.latest:
+            raise ValueError("A static input is no topic, so it has no latest message")
+
+    @property
+    def synchronized(self) -> bool:
+        """Whether the messages of the input are matched with those of the other inputs into samples by their stamps."""
+        return not self.static and not self.latest
 
 
 class Sample:

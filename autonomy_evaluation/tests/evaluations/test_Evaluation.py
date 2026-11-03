@@ -778,6 +778,7 @@ class TestResultsDescription:
             "type": "object",
             "role": "evaluated",
             "optional": False,
+            "latest": False,
             "topic": "/simulation/objects",
         }
         assert results["inputs"]["map"]["role"] == "context"

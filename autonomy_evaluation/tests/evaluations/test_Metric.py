@@ -31,6 +31,17 @@ class TestInput:
         assert Input(object, REFERENCE, optional=True) == Input(object, REFERENCE, optional=True)
         assert Input(object, REFERENCE) != Input(object, CONTEXT)
 
+    def test_only_inputs_of_single_samples_are_synchronized(self):
+        """Static context and inputs passed with their latest message are not matched by their stamps."""
+        assert Input(object, EVALUATED).synchronized
+        assert not Input(object, CONTEXT, static=True).synchronized
+        assert not Input(object, CONTEXT, latest=True).synchronized
+
+    def test_rejects_a_static_input_with_a_latest_message(self):
+        """A static input is no topic, so it has no messages."""
+        with pytest.raises(ValueError, match="no latest message"):
+            Input(object, CONTEXT, static=True, latest=True)
+
 
 class TestSample:
     """Tests the messages of a sample and the data derived from them."""
