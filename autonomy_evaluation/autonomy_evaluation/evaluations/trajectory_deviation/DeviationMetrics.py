@@ -32,7 +32,6 @@ import numpy as np
 from autonomy_evaluation.evaluations.Metric import Aggregation, EVALUATED, Input, Metric, REFERENCE, Sample
 from autonomy_evaluation.evaluations.trajectory_deviation.trajectories import (
     driven_trajectory,
-    frame_transform,
     PLANNED,
     planned_frame,
     planned_trajectory,
@@ -42,6 +41,7 @@ from autonomy_evaluation.evaluations.trajectory_deviation.trajectories import (
     transformed_trajectory,
 )
 from autonomy_evaluation.utils.ClosedLoopUtils import ClosedLoopUtils
+from autonomy_evaluation.utils.TfUtils import TfUtils
 from perception_msgs.msg import EgoData
 
 # Names of the compared inputs
@@ -87,10 +87,14 @@ class Deviations(Metric):
         for name in (_EVALUATED, _REFERENCE):
             message = sample[name]
             if sample.config[f"{name}_source"] == PLANNED:
-                transform = frame_transform(sample.tf_buffer, planned_frame(message), frame_id, message.header.stamp)
+                transform = TfUtils.planar_transform(
+                    sample.tf_buffer, planned_frame(message), frame_id, message.header.stamp, "Trajectories"
+                )
                 record[name] = transformed_trajectory(planned_trajectory(message), transform)
             else:
-                transform = frame_transform(sample.tf_buffer, message.header.frame_id, frame_id, message.header.stamp)
+                transform = TfUtils.planar_transform(
+                    sample.tf_buffer, message.header.frame_id, frame_id, message.header.stamp, "Trajectories"
+                )
                 record[name] = transformed_pose(state_pose(message), transform)
         return record
 

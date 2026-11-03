@@ -37,6 +37,7 @@ import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+from autonomy_evaluation.utils.ClosedLoopUtils import ClosedLoopUtils
 
 # Maximum number of paths ahead that are followed through branching lanes
 _MAX_PATHS = 32
@@ -229,18 +230,7 @@ class Lanelet2Map:
             centerline, the lateral offset from it, positive to the left, and
             the heading of the centerline there.
         """
-        points = self._centerline(lanelet)
-        start, segment = points[:-1], np.diff(points, axis=0)
-        lengths = np.hypot(segment[:, 0], segment[:, 1])
-        offset = np.array([x, y]) - start
-        fraction = np.clip(np.sum(offset * segment, axis=1) / np.maximum(lengths**2, 1e-12), 0.0, 1.0)
-        closest = start + fraction[:, None] * segment
-        index = int(np.argmin(np.hypot(closest[:, 0] - x, closest[:, 1] - y)))
-        heading = math.atan2(segment[index, 1], segment[index, 0])
-        cross = segment[index, 0] * (y - start[index, 1]) - segment[index, 1] * (x - start[index, 0])
-        distance = math.hypot(closest[index, 0] - x, closest[index, 1] - y)
-        s = float(np.sum(lengths[:index]) + fraction[index] * lengths[index])
-        return s, math.copysign(distance, cross), heading
+        return ClosedLoopUtils.polyline_coordinates(self._centerline(lanelet), x, y)
 
     def length(self, lanelet: Any) -> float:
         """Return the length of the centerline of a lanelet."""

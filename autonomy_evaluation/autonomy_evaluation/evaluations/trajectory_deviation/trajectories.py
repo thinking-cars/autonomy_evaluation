@@ -22,17 +22,15 @@ stamp.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any, List, Optional, Sequence, Tuple
 
 import numpy as np
 from autonomy_evaluation.utils.PerceptionMsgsUtils import PerceptionMsgsUtils
+from autonomy_evaluation.utils.TfUtils import IDENTITY, PlanarTransform, TfUtils
 from perception_msgs.msg import ObjectState
 from perception_msgs_utils.state_getters import get_vel_lon, get_x, get_y, get_yaw
 from perception_msgs_utils.state_index import index_vel_lon
-from rclpy.time import Time
-from tf2_ros import TransformException
 
 #: Source of a trajectory planned by the system under test, the ``trajectory_planned`` of its messages.
 PLANNED = "planned"
@@ -121,37 +119,7 @@ def planned_frame(ego_data: Any) -> str:
     return (states[0].header.frame_id if states else "") or ego_data.header.frame_id
 
 
-def frame_transform(tf_buffer: Any, source: str, target: str, stamp: Any) -> Tuple[float, float, float]:
-    """Look up the planar transform from one frame into another.
-
-    Args:
-        tf_buffer: Transforms between the frames, ``None`` if none is available.
-        source, target: Frames; an empty frame is taken as the other one.
-        stamp: ``builtin_interfaces/Time`` to look the transform up at.
-
-    Returns:
-        ``(dx, dy, dyaw)``: the translation and the rotation about the vertical
-        axis that take poses in ``source`` to ``target``, the identity for the
-        same frame.
-
-    Raises:
-        ValueError: No transform between the frames is available at the stamp.
-    """
-    if not source or not target or source == target:
-        return 0.0, 0.0, 0.0
-    error = f"Trajectories in frame '{source}' cannot be transformed into frame '{target}' of the reference"
-    if tf_buffer is None:
-        raise ValueError(f"{error}, as no transforms are available")
-    try:
-        transform = tf_buffer.lookup_transform(target, source, Time.from_msg(stamp)).transform
-    except TransformException as exception:
-        raise ValueError(f"{error}: {exception}") from exception
-    rotation = transform.rotation
-    dyaw = math.atan2(2.0 * (rotation.w * rotation.z + rotation.x * rotation.y), 1.0 - 2.0 * (rotation.y**2 + rotation.z**2))
-    return transform.translation.x, transform.translation.y, dyaw
-
-
-def transformed_pose(pose: Pose, transform: Tuple[float, float, float]) -> Pose:
+def transformed_pose(pose: Pose, transform: PlanarTransform) -> Pose:
     """Apply a planar transform to a pose; the longitudinal velocity is unchanged."""
     x, y, yaw, velocity = pose
     dx, dy, dyaw = transform
@@ -159,19 +127,12 @@ def transformed_pose(pose: Pose, transform: Tuple[float, float, float]) -> Pose:
     return rotated_x + dx, rotated_y + dy, yaw + dyaw, velocity
 
 
-def transformed_trajectory(trajectory: Optional[Trajectory], transform: Tuple[float, float, float]) -> Optional[Trajectory]:
+def transformed_trajectory(trajectory: Optional[Trajectory], transform: PlanarTransform) -> Optional[Trajectory]:
     """Apply a planar transform to a trajectory."""
-    if trajectory is None or transform == (0.0, 0.0, 0.0):
+    if trajectory is None or transform == IDENTITY:
         return trajectory
-    dx, dy, dyaw = transform
-    cos, sin = math.cos(dyaw), math.sin(dyaw)
-    return Trajectory(
-        t=trajectory.t,
-        x=cos * trajectory.x - sin * trajectory.y + dx,
-        y=sin * trajectory.x + cos * trajectory.y + dy,
-        yaw=trajectory.yaw + dyaw,
-        velocity=trajectory.velocity,
-    )
+    x, y = TfUtils.transform_points(trajectory.x, trajectory.y, transform)
+    return Trajectory(t=trajectory.t, x=x, y=y, yaw=trajectory.yaw + transform[2], velocity=trajectory.velocity)
 
 
 def driven_trajectory(stamps: List[float], poses: List[Pose], start: int, horizon: float) -> Optional[Trajectory]:

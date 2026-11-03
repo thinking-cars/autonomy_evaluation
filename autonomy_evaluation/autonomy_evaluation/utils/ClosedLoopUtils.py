@@ -25,6 +25,7 @@ are vectorized with numpy over arrays of road users or poses:
 
 from __future__ import annotations
 
+import math
 from typing import Dict, Optional, Tuple
 
 import numpy as np
@@ -238,6 +239,31 @@ class ClosedLoopUtils:
         s = np.arctan2(curvature * x, 1.0 - curvature * y) / curvature
         d = (1.0 - np.hypot(curvature * x, 1.0 - curvature * y)) / curvature
         return s, d
+
+    @staticmethod
+    def polyline_coordinates(points: np.ndarray, x: float, y: float) -> Tuple[float, float, float]:
+        """Express a point in coordinates along a polyline, e.g. the centerline of a lane or a route.
+
+        Args:
+            points: Points of the polyline as array of shape ``(n, 2)``, ``n >= 2``.
+            x, y: The point.
+
+        Returns:
+            ``(s, d, heading)``: the arc length of the closest point of the
+            polyline, the lateral offset from it, positive to the left, and the
+            heading of the polyline there.
+        """
+        start, segment = points[:-1], np.diff(points, axis=0)
+        lengths = np.hypot(segment[:, 0], segment[:, 1])
+        offset = np.array([x, y]) - start
+        fraction = np.clip(np.sum(offset * segment, axis=1) / np.maximum(lengths**2, 1e-12), 0.0, 1.0)
+        closest = start + fraction[:, None] * segment
+        index = int(np.argmin(np.hypot(closest[:, 0] - x, closest[:, 1] - y)))
+        heading = math.atan2(segment[index, 1], segment[index, 0])
+        cross = segment[index, 0] * (y - start[index, 1]) - segment[index, 1] * (x - start[index, 0])
+        distance = math.hypot(closest[index, 0] - x, closest[index, 1] - y)
+        s = float(np.sum(lengths[:index]) + fraction[index] * lengths[index])
+        return s, math.copysign(distance, cross), heading
 
     @staticmethod
     def time_derivative(times: np.ndarray, values: np.ndarray) -> np.ndarray:
