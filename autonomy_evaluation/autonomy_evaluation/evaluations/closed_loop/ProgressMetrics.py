@@ -16,10 +16,11 @@ for the sampling period of its sequence.
 The route is read from the optional ``route`` input
 (``route_planning_msgs/Route``), of which every sample is passed the latest
 message, as a route is planned independently of the samples: the path through
-the reference poses of the suggested lanes of its route elements, from the
-starting route element to the one behind the destination, and its
-``destination``. Without route message, the ``route_planned`` points of the
-``ego_data`` are the route and the last of them its destination. A route in
+the reference poses of the suggested lanes of its route elements, each at its
+arc length ``s`` from the start of the route, and its ``destination``, which
+lies within the published route if it has a ``destination_route_element_idx``.
+Without route message, the ``route_planned`` points of the ``ego_data`` are the
+route and the last of them its destination. A route in
 another frame than the ego vehicle is transformed with the transform tf2 holds
 at the stamp of the route.
 """
@@ -37,9 +38,6 @@ from autonomy_evaluation.evaluations.sampling import sampling_period
 from autonomy_evaluation.utils.ClosedLoopUtils import ClosedLoopUtils
 from autonomy_evaluation.utils.TfUtils import TfUtils
 from route_planning_msgs.msg import Route
-
-#: A route as the points of its path, an array of shape ``(n, 2)``, and its destination ``(x, y)``.
-RoutePath = Tuple[np.ndarray, Tuple[float, float]]
 
 
 class DistanceDriven(Metric):
@@ -109,15 +107,20 @@ class DistanceDriven(Metric):
 class RouteProgress(Metric):
     """How far the ego vehicle gets along the route planned for it, towards its destination.
 
-    At each sample, the position of the ego vehicle and the destination are
-    projected onto the path of the route; the distance between both
-    projections along the path is the distance remaining to the destination.
-    The samples of a scene with the same destination form one route, a new
-    destination farther than ``goal_tolerance`` from the previous one a new
-    route. The completion of a route is the share of the distance remaining at
-    its first sample that the ego vehicle has driven by its last sample, and it
-    reaches its destination once the remaining distance falls to
-    ``goal_tolerance``.
+    A route planner may publish only a window of its route, e.g. trimmed behind
+    the ego vehicle and ending ahead of it before the destination, as long as
+    the arc length ``s`` of each route element counts from the start of the
+    whole route. At each sample, the ego vehicle is projected onto the path of
+    the route and placed at the arc length interpolated between the route
+    elements; the destination is placed likewise while it lies within the
+    window. The samples of a scene with the same destination form one route, a
+    new destination farther than ``goal_tolerance`` from the previous one a new
+    route. The progress along a route is the arc length the ego vehicle gains
+    from its first to its last sample; its completion is that progress over the
+    distance between the ego vehicle at the first sample and the destination,
+    and the destination is reached once the ego vehicle comes within
+    ``goal_tolerance`` of it along the route. Both need the destination to lie
+    within the window at some sample of the route.
 
     Configuration:
         ``goal_tolerance``: distance in meters along the route within which the
@@ -140,13 +143,15 @@ class RouteProgress(Metric):
         """Take the destination as reached within 3 m along the route."""
         return {"goal_tolerance": 3.0}
 
-    def compute_sample(self, sample: Sample) -> Optional[Tuple[float, float, float, float]]:
-        """Measure the distance the ego vehicle has left to its destination at a sample.
+    def compute_sample(self, sample: Sample) -> Optional[Tuple[float, Optional[float], float, float, float]]:
+        """Place the ego vehicle and the destination along the route at a sample.
 
         Returns:
-            ``(remaining, lateral, destination_x, destination_y)``: the distance
-            remaining along the route in meters, the distance of the ego vehicle
-            from the path of the route, and the destination; ``None`` without route.
+            ``(s_ego, s_destination, lateral, destination_x, destination_y)``:
+            the arc length of the ego vehicle and of the destination along the
+            route in meters, the latter ``None`` while the destination lies
+            beyond the published route; the distance of the ego vehicle from the
+            path of the route; and the destination; ``None`` without route.
 
         Raises:
             ValueError: The route cannot be transformed into the frame of the ego vehicle.
@@ -154,11 +159,9 @@ class RouteProgress(Metric):
         path = self._path(sample)
         if path is None:
             return None
-        points, destination = path
         ego = ego_state(sample)
-        s_ego, lateral, _ = ClosedLoopUtils.polyline_coordinates(points, ego.x, ego.y)
-        s_destination, _, _ = ClosedLoopUtils.polyline_coordinates(points, *destination)
-        return max(s_destination - s_ego, 0.0), abs(lateral), destination[0], destination[1]
+        s_ego, lateral = path.locate(ego.x, ego.y)
+        return s_ego, path.s_destination, abs(lateral), path.destination[0], path.destination[1]
 
     def aggregate(self, aggregation: Aggregation) -> Dict[str, Any]:
         """Report how far the ego vehicle gets along its routes.
@@ -166,24 +169,31 @@ class RouteProgress(Metric):
         Returns:
             ``{"_value_", "distance", "remaining_distance", "goals_reached",
             "num_routes", "max_lateral_distance", "coverage"}``: the completion
-            of the routes, averaged over the routes, ``None`` without route; the
-            distance progressed along the routes and the distance remaining at
-            their last samples in meters, summed over the routes; the number of
+            of the routes whose destination is known, averaged over them,
+            ``None`` without such a route; the progress along all routes and the
+            distance remaining to the known destinations at the last samples of
+            their routes in meters, summed over the routes; the number of
             routes whose destination the ego vehicle reached, and of all routes;
             the largest distance of the ego vehicle from the path of its route;
             and the share of the samples with route, ``None`` without samples.
         """
         tolerance = self.config["goal_tolerance"]
-        routes = self._routes(aggregation, tolerance)
         records = aggregation.records(self.name)
         completions, distance, remaining, goals_reached = [], 0.0, 0.0, 0
+        routes = self._routes(aggregation, tolerance)
         for route in routes:
             first, last = route[0][0], route[-1][0]
-            completions.append(1.0 if first <= tolerance else min(max((first - last) / first, 0.0), 1.0))
-            distance += first - last
-            remaining += last
-            goals_reached += min(left for left, _ in route) <= tolerance
-        laterals = [lateral for route in routes for _, lateral in route]
+            distance += last - first
+            destinations = [s_destination for _, s_destination, _ in route if s_destination is not None]
+            if not destinations:
+                continue
+            s_destination = destinations[-1]
+            to_go = max(s_destination - first, 0.0)
+            left = max(s_destination - last, 0.0)
+            completions.append(1.0 if to_go <= tolerance else min(max((to_go - left) / to_go, 0.0), 1.0))
+            remaining += left
+            goals_reached += min(s_destination - s_ego for s_ego, _, _ in route) <= tolerance
+        laterals = [lateral for route in routes for _, _, lateral in route]
         return {
             "_value_": float(np.mean(completions)) if completions else None,
             "distance": distance,
@@ -194,36 +204,37 @@ class RouteProgress(Metric):
             "coverage": sum(record is not None for record in records) / len(records) if records else None,
         }
 
-    def _routes(self, aggregation: Aggregation, tolerance: float) -> List[List[Tuple[float, float]]]:
+    def _routes(self, aggregation: Aggregation, tolerance: float) -> List[List[Tuple[float, Optional[float], float]]]:
         """Split the records of the samples into routes: per scene, by their destination.
 
         Returns:
-            The ``(remaining, lateral)`` of the samples of each route, in the order of the samples.
+            The ``(s_ego, s_destination, lateral)`` of the samples of each route, in the order of the samples.
         """
-        routes: List[List[Tuple[float, float]]] = []
-        current: Dict[Any, Tuple[Tuple[float, float], List[Tuple[float, float]]]] = {}
+        routes: List[List[Tuple[float, Optional[float], float]]] = []
+        current: Dict[Any, Tuple[Tuple[float, float], List[Tuple[float, Optional[float], float]]]] = {}
         for entry, record in zip(aggregation.entries, aggregation.records(self.name)):
             if record is None:
                 continue
-            remaining, lateral, x, y = record
+            s_ego, s_destination, lateral, x, y = record
             scene = entry.get("scene_id")
             if scene not in current or math.hypot(x - current[scene][0][0], y - current[scene][0][1]) > tolerance:
                 current[scene] = ((x, y), [])
                 routes.append(current[scene][1])
-            current[scene][1].append((remaining, lateral))
+            current[scene][1].append((s_ego, s_destination, lateral))
         return routes
 
-    def _path(self, sample: Sample) -> Optional[RoutePath]:
+    def _path(self, sample: Sample) -> Optional["RoutePath"]:
         """Return the route of a sample in the frame of the ego vehicle, derived once per route message."""
         route = sample.messages.get("route")
         if route is not None and self._route is not None and self._route[0] is route:
             return self._route[1]
         ego_data = sample["ego_data"]
         if route is not None and route.route_elements:
-            points, destination = _route_points(route), (route.destination.x, route.destination.y)
-            header = route.header
+            points, arc_lengths, destination_index = _route_points(route)
+            destination, header = (route.destination.x, route.destination.y), route.header
         elif ego_data.route_planned:
             points = [(point.x, point.y) for point in ego_data.route_planned]
+            arc_lengths, destination_index = None, len(points) - 1
             destination, header = points[-1], ego_data.header
         else:
             return None
@@ -236,22 +247,73 @@ class RouteProgress(Metric):
             destination_x, destination_y = TfUtils.transform_points(
                 np.array([destination[0]]), np.array([destination[1]]), transform
             )
-            path = np.column_stack([x, y]), (float(destination_x[0]), float(destination_y[0]))
+            path = RoutePath(
+                np.column_stack([x, y]), arc_lengths, (float(destination_x[0]), float(destination_y[0])), destination_index
+            )
         if route is not None:
             self._route = (route, path)
         return path
 
 
-def _route_points(route: Route) -> List[Tuple[float, float]]:
-    """Collect the reference positions of the suggested lanes of a route, from its start to behind its destination."""
+class RoutePath:
+    """The path of a route, with the arc length of its points along the whole route, and its destination.
+
+    Attributes:
+        points: Points of the path, an array of shape ``(n, 2)``.
+        arc_lengths: Arc length of each point along the whole route in meters.
+        destination: Destination ``(x, y)``.
+        s_destination: Arc length of the destination along the whole route,
+            ``None`` if the destination lies beyond the path.
+    """
+
+    def __init__(
+        self,
+        points: np.ndarray,
+        arc_lengths: Optional[np.ndarray],
+        destination: Tuple[float, float],
+        destination_index: Optional[int],
+    ) -> None:
+        """Hold a path, placing its points by their distances along it unless their arc lengths are given."""
+        self.points = points
+        self._lengths = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(points, axis=0).T))])
+        self.arc_lengths = self._lengths if arc_lengths is None else np.asarray(arc_lengths, dtype=float)
+        self.destination = destination
+        self.s_destination = None if destination_index is None else self.locate(*destination)[0]
+
+    def locate(self, x: float, y: float) -> Tuple[float, float]:
+        """Place a point along the route.
+
+        Returns:
+            ``(s, lateral)``: the arc length along the whole route of the
+            closest point of the path, interpolated between the arc lengths of
+            the points of the path, and the lateral offset from the path.
+        """
+        along, lateral, _ = ClosedLoopUtils.polyline_coordinates(self.points, x, y)
+        return float(np.interp(along, self._lengths, self.arc_lengths)), lateral
+
+
+def _route_points(route: Route) -> Tuple[List[Tuple[float, float]], np.ndarray, Optional[int]]:
+    """Collect the reference positions and arc lengths of the suggested lanes of a published route.
+
+    Returns:
+        ``(points, arc_lengths, destination_index)``: the reference position
+        and the arc length of each route element with a lane, consecutive
+        duplicates left out, and the index of the point of the route element
+        behind the destination, ``None`` if the route ends before the destination.
+    """
     elements = route.route_elements
-    start = route.starting_route_element_idx if route.starting_route_element_idx < len(elements) else 0
-    end = route.destination_route_element_idx
-    if not start < end < len(elements):
-        end = len(elements) - 1
-    points = []
-    for element in elements[start : end + 1]:
-        if element.lane_elements:
-            lane = element.lane_elements[min(element.suggested_lane_idx, len(element.lane_elements) - 1)]
-            points.append((lane.reference_pose.position.x, lane.reference_pose.position.y))
-    return points
+    points: List[Tuple[float, float]] = []
+    arc_lengths: List[float] = []
+    destination_index = None
+    for index, element in enumerate(elements):
+        if not element.lane_elements:
+            continue
+        lane = element.lane_elements[min(element.suggested_lane_idx, len(element.lane_elements) - 1)]
+        point = (lane.reference_pose.position.x, lane.reference_pose.position.y)
+        if points and point == points[-1]:
+            continue
+        points.append(point)
+        arc_lengths.append(element.s)
+        if index == route.destination_route_element_idx:
+            destination_index = len(points) - 1
+    return points, np.asarray(arc_lengths, dtype=float), destination_index

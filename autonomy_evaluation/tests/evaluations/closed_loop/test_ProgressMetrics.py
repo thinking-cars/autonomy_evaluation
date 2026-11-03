@@ -107,6 +107,41 @@ class TestRouteProgress:
         assert progress["_value_"] == pytest.approx((0.5 + 1.0) / 2.0)
         assert progress["goals_reached"] == 1
 
+    def test_route_window_moving_along_with_the_ego_vehicle(self):
+        """A planner publishing 50 m of a 150 m route around the ego vehicle, the destination only once it is near.
+
+        The arc lengths count from the start of the whole route, so the ego vehicle progresses along the route
+        across the windows, and the destination at 150 m is known from the last window on.
+        """
+
+        def window(start: float, destination_index=None):
+            return route(
+                [(start + 10.0 * index, 0.0) for index in range(6)],
+                destination=(150.0, 0.0),
+                start_s=start,
+                destination_index=destination_index,
+            )
+
+        egos = [{"x": 0.0}, {"x": 60.0}, {"x": 120.0}]
+        routes = [window(0.0), window(50.0), window(100.0, destination_index=5)]
+
+        progress = _evaluate(egos, routes=routes)["route"]
+
+        assert progress["distance"] == pytest.approx(120.0)
+        assert progress["remaining_distance"] == pytest.approx(30.0)
+        assert progress["_value_"] == pytest.approx(120.0 / 150.0)
+        assert progress["num_routes"] == 1
+
+    def test_completion_needs_the_destination_within_the_route(self):
+        """While the destination lies beyond every published window, only the progress is known."""
+        far = route([(10.0 * index, 0.0) for index in range(6)], destination=(500.0, 0.0), destination_index=None)
+
+        progress = _evaluate([{"x": 0.0}, {"x": 30.0}], routes=[far] * 2)["route"]
+
+        assert progress["distance"] == pytest.approx(30.0)
+        assert progress["_value_"] is None
+        assert (progress["goals_reached"], progress["num_routes"]) == (0, 1)
+
     def test_lateral_distance_to_the_suggested_lane(self):
         """The path of the route follows the suggested lane, here the left one of two lanes 3.5 m apart."""
         two_lanes = route([(10.0 * index, 0.0) for index in range(11)], lane_offsets=(0.0, 3.5), suggested_lane=1)

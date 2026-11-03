@@ -127,23 +127,33 @@ def route(
     frame_id: str = "map",
     lane_offsets: Sequence[float] = (0.0,),
     suggested_lane: int = 0,
+    start_s: float = 0.0,
+    destination_index: Optional[int] = -1,
 ) -> Route:
     """Build a route through the given points, towards a destination, by default the last point.
 
     Each point is a route element whose lanes lie at the given lateral offsets in y, of which the
-    suggested lane is the given one.
+    suggested lane is the given one, at its distance along the points from the start of the route,
+    which lies ``start_s`` before the first point for a route window trimmed behind the ego vehicle.
+    The destination lies at the route element of the given index, by default the last one, or beyond
+    the route window for ``None``.
     """
     message = Route()
-    for x, y in points:
+    s = start_s
+    for index, (x, y) in enumerate(points):
+        if index:
+            s += math.hypot(x - points[index - 1][0], y - points[index - 1][1])
         lanes = []
         for offset in lane_offsets:
             lane = LaneElement()
             lane.reference_pose.position.x, lane.reference_pose.position.y = float(x), float(y + offset)
             lanes.append(lane)
-        message.route_elements.append(RouteElement(lane_elements=lanes, suggested_lane_idx=suggested_lane))
+        message.route_elements.append(RouteElement(lane_elements=lanes, suggested_lane_idx=suggested_lane, s=s))
     message.destination.x, message.destination.y = (float(value) for value in (destination or points[-1]))
-    message.starting_route_element_idx = 0
-    message.destination_route_element_idx = len(points) - 1
+    message.starting_route_element_idx = 0 if start_s == 0.0 else Route.INVALID_ROUTE_ELEMENT_IDX
+    message.destination_route_element_idx = (
+        Route.INVALID_ROUTE_ELEMENT_IDX if destination_index is None else destination_index % len(points)
+    )
     return _stamped(message, stamp, frame_id)
 
 
