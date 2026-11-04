@@ -3,16 +3,17 @@
 
 """Evaluation of the deviation of an evaluated trajectory from a reference trajectory.
 
-Compares two trajectories of the ego vehicle, each read from an
-``perception_msgs/EgoData`` input and taken either from its planned trajectory
-or from the states actually driven (see
-:mod:`~autonomy_evaluation.evaluations.trajectory_deviation.trajectories`), so
-that one evaluation covers several questions by the sources and topics of its
-inputs:
+Compares two trajectories of the ego vehicle, each read from an input and
+taken from its configured source (see
+:mod:`~autonomy_evaluation.evaluations.trajectory_deviation.trajectories`): the
+trajectory planned in a ``perception_msgs/EgoData`` (``planned``), the states
+of ``perception_msgs/EgoData`` actually driven (``driven``), or a
+``trajectory_planning_msgs/Trajectory`` (``trajectory``). One evaluation thus
+covers several questions by the sources and topics of its inputs:
 
 - How well does the controller follow the plan? The ``evaluated`` trajectory
-  is the one driven, the ``reference`` the one planned, both read from the same
-  topic.
+  is the one driven, the ``reference`` the one planned, read from the same
+  ``EgoData`` topic or from the ``Trajectory`` topic of the planner.
 - How far does a planner deviate from a ground truth, e.g. the recorded
   trajectory of a human driver (open-loop planning)? The ``evaluated``
   trajectory is the planned one, the ``reference`` the one driven by the ground
@@ -45,7 +46,13 @@ from autonomy_evaluation.evaluations.trajectory_deviation.DeviationMetrics impor
     Longitudinal,
     Velocity,
 )
-from autonomy_evaluation.evaluations.trajectory_deviation.trajectories import DRIVEN, PLANNED, SOURCES, state_pose
+from autonomy_evaluation.evaluations.trajectory_deviation.trajectories import (
+    DRIVEN,
+    PLANNED,
+    SOURCES,
+    state_pose,
+    TRAJECTORY,
+)
 
 
 class TrajectoryDeviation(Evaluation):
@@ -78,23 +85,50 @@ class TrajectoryDeviation(Evaluation):
 
         Returns:
             ``evaluated_source``, ``reference_source``: whether the trajectory
-            of each input is the ``planned`` one or the one ``driven``; by
-            default, the planned trajectory is compared with the one driven.
+            of each input is the one ``planned`` in its ``EgoData``, the one
+            ``driven``, or a ``trajectory`` message; by default, the planned
+            trajectory is compared with the one driven.
+            ``fixed_frame``: fixed frame the trajectories are compared in, e.g.
+            ``map``; if empty, the frame of the reference.
+            ``base_link_to_geometric_center``: translation ``[x, y]`` in meters
+            from the origin of ``base_link``, the point of the vehicle the
+            sample points of every ``trajectory`` input describe, e.g. its rear
+            axle, to its geometric center.
             ``horizon``: seconds after each sample over which the trajectories
             are compared. ``time_step``: seconds between the compared times.
         """
-        return {"evaluated_source": PLANNED, "reference_source": DRIVEN, "horizon": 5.0, "time_step": 0.1}
+        return {
+            "evaluated_source": PLANNED,
+            "reference_source": DRIVEN,
+            "fixed_frame": "",
+            "base_link_to_geometric_center": [0.0, 0.0],
+            "horizon": 5.0,
+            "time_step": 0.1,
+        }
 
     def sample_position(self, sample: Sample) -> Optional[Tuple[float, float]]:
-        """Report the position of the reference ego vehicle, so that a teleport splits the driven trajectories."""
-        x, y, _, _ = state_pose(sample["reference"])
-        return x, y
+        """Report the position of the ego vehicle, so that a teleport splits the driven trajectories.
+
+        Returns:
+            The position of the ego vehicle of the reference, else of the
+            evaluated input, whichever is read as ``EgoData``; ``None`` if both
+            are trajectory messages.
+        """
+        for name in ("reference", "evaluated"):
+            message = sample.messages.get(name)
+            if message is not None and self.config[f"{name}_source"] != TRAJECTORY:
+                x, y, _, _ = state_pose(message)
+                return x, y
+        return None
 
     def configure(self, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Apply a configuration, checking that the sources are known and the times positive.
+        """Apply a configuration, checking it and declaring the message types of the inputs by their sources.
 
         Raises:
-            ValueError: The configuration is invalid, see :meth:`Evaluation.configure`.
+            ValueError: The configuration is invalid, see
+                :meth:`Evaluation.configure`, e.g. a ``trajectory`` source
+                without ``fixed_frame``, as trajectory messages are often given in
+                the frame of the vehicle, which moves.
         """
         effective = super().configure(config)
         for key in ("evaluated_source", "reference_source"):
@@ -103,4 +137,17 @@ class TrajectoryDeviation(Evaluation):
         for key in ("horizon", "time_step"):
             if effective[key] <= 0.0:
                 raise ValueError(f"Evaluation '{self.name}' expects '{key}' to be positive, not {effective[key]!r}")
+        if len(effective["base_link_to_geometric_center"]) != 2:
+            raise ValueError(
+                f"Evaluation '{self.name}' expects 'base_link_to_geometric_center' to be [x, y], not "
+                f"{effective['base_link_to_geometric_center']!r}"
+            )
+        sources = {name: effective[f"{name}_source"] for name in ("evaluated", "reference")}
+        if TRAJECTORY in sources.values() and not effective["fixed_frame"]:
+            raise ValueError(
+                f"Evaluation '{self.name}' expects 'fixed_frame' to name a fixed frame to compare in, e.g. 'map', as "
+                f"'{TRAJECTORY}' messages are often given in the frame of the vehicle"
+            )
+        for metric in self.available_metrics().values():
+            metric.sources = sources
         return effective

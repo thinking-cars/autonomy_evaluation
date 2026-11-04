@@ -25,6 +25,8 @@
   <depend>std_srvs</depend>
   <depend>tf2_perception_msgs</depend>
   <depend>tf2_ros_py</depend>
+  <depend>trajectory_planning_msgs</depend>
+  <depend>trajectory_planning_msgs_utils</depend>
 
   <exec_depend>autonomy_datasets_rviz_plugins</exec_depend>
   <exec_depend>perception_msgs_rviz_plugins</exec_depend>

@@ -4,8 +4,8 @@
 """Metrics of the deviation of an evaluated trajectory from a reference trajectory.
 
 At each sample, the trajectory of the ``evaluated`` input and that of the
-``reference`` input (see
-:mod:`~autonomy_evaluation.evaluations.trajectory_deviation.trajectories`) are
+``reference`` input, each from its configured source (see
+:mod:`~autonomy_evaluation.evaluations.trajectory_deviation.trajectories`), are
 compared over the time they share within the ``horizon`` after the sample:
 both are interpolated every ``time_step`` from the stamp of the sample on, and
 at each of these times the evaluated pose is compared with the reference pose.
@@ -31,18 +31,21 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from autonomy_evaluation.evaluations.Metric import Aggregation, EVALUATED, Input, Metric, REFERENCE, Sample
 from autonomy_evaluation.evaluations.trajectory_deviation.trajectories import (
+    DRIVEN,
     driven_trajectory,
+    message_trajectory,
+    message_type,
     PLANNED,
     planned_frame,
     planned_trajectory,
     state_pose,
+    TRAJECTORY,
     Trajectory,
     transformed_pose,
     transformed_trajectory,
 )
 from autonomy_evaluation.utils.ClosedLoopUtils import ClosedLoopUtils
 from autonomy_evaluation.utils.TfUtils import TfUtils
-from perception_msgs.msg import EgoData
 
 # Names of the compared inputs
 _EVALUATED = "evaluated"
@@ -52,12 +55,38 @@ _REFERENCE = "reference"
 _EPSILON = 1e-9
 
 
-def deviation_inputs() -> Dict[str, Input]:
-    """Declare the compared inputs: the ``evaluated`` and the ``reference`` ``EgoData``."""
-    return {_EVALUATED: Input(EgoData, EVALUATED), _REFERENCE: Input(EgoData, REFERENCE)}
+#: Sources of the compared inputs unless the evaluation configures others: a planned against a driven trajectory
+DEFAULT_SOURCES: Dict[str, str] = {_EVALUATED: PLANNED, _REFERENCE: DRIVEN}
 
 
-class Deviations(Metric):
+def deviation_inputs(sources: Dict[str, str]) -> Dict[str, Input]:
+    """Declare the compared inputs, ``evaluated`` and ``reference``, each of the message type of its source."""
+    return {
+        _EVALUATED: Input(message_type(sources[_EVALUATED]), EVALUATED),
+        _REFERENCE: Input(message_type(sources[_REFERENCE]), REFERENCE),
+    }
+
+
+def planned_trajectory_of(message: Any, source: str, config: Dict[str, Any]) -> Tuple[Optional[Trajectory], str]:
+    """Read the planned trajectory of a message of a source, ``planned`` or ``trajectory``, and the frame it is given in."""
+    if source == TRAJECTORY:
+        return message_trajectory(message, config["base_link_to_geometric_center"]), message.header.frame_id
+    return planned_trajectory(message), planned_frame(message)
+
+
+class _ReadsTrajectories(Metric):
+    """Metric reading the inputs of the trajectory deviation evaluation, whose message types depend on their sources.
+
+    Attributes:
+        sources: Source of the trajectory of each input, which the evaluation
+            sets when it is configured, see
+            :meth:`~autonomy_evaluation.evaluations.trajectory_deviation.TrajectoryDeviation.TrajectoryDeviation.configure`.
+    """
+
+    sources: Dict[str, str] = DEFAULT_SOURCES
+
+
+class Deviations(_ReadsTrajectories):
     """Internal metric comparing the evaluated with the reference trajectory at each sample.
 
     Its result is no metric, but the comparisons the deviation metrics share:
@@ -68,11 +97,11 @@ class Deviations(Metric):
     INTERNAL = True
 
     def inputs(self) -> Dict[str, Input]:
-        """Read the evaluated and the reference ego vehicle."""
-        return deviation_inputs()
+        """Read the evaluated and the reference input."""
+        return deviation_inputs(self.sources)
 
     def compute_sample(self, sample: Sample) -> Dict[str, Any]:
-        """Record what both trajectories need of a sample, in the frame of the reference.
+        """Record what both trajectories need of a sample, in the frame compared in.
 
         Returns:
             ``{"stamp", "evaluated", "reference"}``: the stamp of the sample, and
@@ -80,17 +109,21 @@ class Deviations(Metric):
             pose of the ego vehicle, from which the driven trajectory is built.
 
         Raises:
-            ValueError: The evaluated input cannot be transformed into the frame of the reference.
+            ValueError: An input cannot be transformed into the frame compared
+                in, the configured ``fixed_frame`` or else that of the reference, or a
+                trajectory message is malformed.
         """
-        frame_id = sample[_REFERENCE].header.frame_id
+        frame_id = sample.config["fixed_frame"] or sample[_REFERENCE].header.frame_id
         record: Dict[str, Any] = {"stamp": sample.stamp}
         for name in (_EVALUATED, _REFERENCE):
             message = sample[name]
-            if sample.config[f"{name}_source"] == PLANNED:
+            source = sample.config[f"{name}_source"]
+            if source != DRIVEN:
+                trajectory, trajectory_frame = planned_trajectory_of(message, source, sample.config)
                 transform = TfUtils.planar_transform(
-                    sample.tf_buffer, planned_frame(message), frame_id, message.header.stamp, "Trajectories"
+                    sample.tf_buffer, trajectory_frame, frame_id, message.header.stamp, "Trajectories"
                 )
-                record[name] = transformed_trajectory(planned_trajectory(message), transform)
+                record[name] = transformed_trajectory(trajectory, transform)
             else:
                 transform = TfUtils.planar_transform(
                     sample.tf_buffer, message.header.frame_id, frame_id, message.header.stamp, "Trajectories"
@@ -127,7 +160,7 @@ class Deviations(Metric):
 
 def _trajectories(records: List[Dict[str, Any]], name: str, source: str, horizon: float) -> List[Optional[Trajectory]]:
     """Return the trajectory of an input at each sample of a sequence, planned or driven over the horizon."""
-    if source == PLANNED:
+    if source != DRIVEN:
         return [record[name] for record in records]
     if any(record["stamp"] is None for record in records):
         return [None] * len(records)
@@ -170,12 +203,12 @@ def _deviation(
     }
 
 
-class _DeviationMetric(Metric):
+class _DeviationMetric(_ReadsTrajectories):
     """Metric of the deviation of the evaluated from the reference trajectory, building on their comparisons."""
 
     def inputs(self) -> Dict[str, Input]:
-        """Read the evaluated and the reference ego vehicle."""
-        return deviation_inputs()
+        """Read the evaluated and the reference input."""
+        return deviation_inputs(self.sources)
 
     def requires(self) -> Tuple[str, ...]:
         """Build on the comparisons of both trajectories."""
@@ -329,26 +362,42 @@ class Velocity(_DeviationMetric):
         return self._errors(self._compared(aggregation, "velocity")[0], "velocity")
 
 
-class Consistency(Metric):
+class Consistency(_ReadsTrajectories):
     """Consistency of the planned trajectories of the evaluated input over consecutive samples.
 
     Each planned trajectory is compared with the one planned at the previous
     sample of the same sequence, over the time both share within the horizon
     after the later sample, like the deviation metrics compare the evaluated
-    with the reference trajectory; consecutive planned trajectories are taken
-    to be in the same frame. A planner that keeps to its plans deviates little,
-    one that jumps between plans much.
+    with the reference trajectory. The planned trajectories are those of
+    ``trajectory`` messages if that is the source of the evaluated input, else
+    the ones planned in its ``EgoData``. They are compared in the configured
+    ``fixed_frame``, else in the frame they are given in, which consecutive planned
+    trajectories are then taken to share. A planner that keeps to its plans
+    deviates little, one that jumps between plans much.
     """
 
     NAME = "consistency"
 
     def inputs(self) -> Dict[str, Input]:
-        """Read the evaluated ego vehicle only."""
-        return {_EVALUATED: Input(EgoData, EVALUATED)}
+        """Read the evaluated input only."""
+        return {_EVALUATED: deviation_inputs(self.sources)[_EVALUATED]}
 
     def compute_sample(self, sample: Sample) -> Tuple[Optional[float], Optional[Trajectory]]:
-        """Record the stamp of a sample and the trajectory the evaluated input planned at it."""
-        return sample.stamp, planned_trajectory(sample[_EVALUATED])
+        """Record the stamp of a sample and the trajectory the evaluated input planned at it.
+
+        Raises:
+            ValueError: The planned trajectory cannot be transformed into the
+                configured ``fixed_frame``, or a trajectory message is malformed.
+        """
+        message = sample[_EVALUATED]
+        source = TRAJECTORY if sample.config["evaluated_source"] == TRAJECTORY else PLANNED
+        trajectory, trajectory_frame = planned_trajectory_of(message, source, sample.config)
+        if sample.config["fixed_frame"] and trajectory is not None:
+            transform = TfUtils.planar_transform(
+                sample.tf_buffer, trajectory_frame, sample.config["fixed_frame"], message.header.stamp, "Trajectories"
+            )
+            trajectory = transformed_trajectory(trajectory, transform)
+        return sample.stamp, trajectory
 
     def aggregate(self, aggregation: Aggregation) -> Dict[str, Any]:
         """Report how far consecutive planned trajectories deviate from each other.

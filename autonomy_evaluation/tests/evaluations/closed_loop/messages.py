@@ -6,7 +6,7 @@
 The ego vehicle is a ``perception_msgs/EgoData`` of the EGO state model, the other road users are
 ``perception_msgs/Object`` entries of the HEXAMOTION state model. State entries that are given are
 marked as set in the state covariance, all others stay marked as not set, as ``perception_msgs_utils``
-initializes them.
+initializes them. A planner may also publish its plan as ``trajectory_planning_msgs/Trajectory``.
 """
 
 from __future__ import annotations
@@ -19,6 +19,9 @@ from perception_msgs.msg import EGO, EgoData, HEXAMOTION, Object, ObjectList, Ob
 from perception_msgs_utils import initialize_state, set_continuous_state_covariance_to_unknown_at
 from route_planning_msgs.msg import LaneElement, Route, RouteElement
 from tf2_ros import Buffer
+from trajectory_planning_msgs.msg import DRIVABLE, Trajectory
+from trajectory_planning_msgs_utils.state_index import has_theta, index_t, index_theta, index_v, index_x, index_y
+from trajectory_planning_msgs_utils.utils import get_state_dim
 
 # A car of 4 m length and 2 m width
 LENGTH, WIDTH = 4.0, 2.0
@@ -157,15 +160,50 @@ def route(
     return _stamped(message, stamp, frame_id)
 
 
+def trajectory(
+    stamp: float,
+    points: Sequence[Tuple[float, float, float, float, Optional[float]]],
+    type_id: int = DRIVABLE.TYPE_ID,
+    frame_id: str = "base_link",
+) -> Trajectory:
+    """Build a ``trajectory_planning_msgs/Trajectory`` from ``(t, x, y, v, theta)`` sample points.
+
+    ``theta`` is left out for a type without heading, e.g. ``REFERENCE``; all
+    other entries of a sample point, e.g. the acceleration, are zero.
+    """
+    dimension = get_state_dim(type_id)
+    states = []
+    for t, x, y, v, theta in points:
+        state = [0.0] * dimension
+        for index, value in ((index_t(type_id), t), (index_x(type_id), x), (index_y(type_id), y), (index_v(type_id), v)):
+            state[index] = value
+        if has_theta(type_id):
+            state[index_theta(type_id)] = theta
+        states.extend(state)
+    return _stamped(Trajectory(type_id=type_id, states=states), stamp, frame_id)
+
+
 def static_tf_buffer(parent: str, child: str, x: float = 0.0, y: float = 0.0, yaw: float = 0.0) -> Buffer:
     """Build a tf2 buffer holding the static transform of a child frame in a parent frame."""
-    transform = TransformStamped()
-    transform.header.frame_id = parent
+    tf_buffer = Buffer()
+    tf_buffer.set_transform_static(_transform(parent, child, 0.0, x, y, yaw), "test")
+    return tf_buffer
+
+
+def moving_tf_buffer(parent: str, child: str, poses: Sequence[Tuple[float, float, float, float]]) -> Buffer:
+    """Build a tf2 buffer holding the transforms of a moving child frame, e.g. of the vehicle, as ``(stamp, x, y, yaw)``."""
+    tf_buffer = Buffer()
+    for stamp, x, y, yaw in poses:
+        tf_buffer.set_transform(_transform(parent, child, stamp, x, y, yaw), "test")
+    return tf_buffer
+
+
+def _transform(parent: str, child: str, stamp: float, x: float, y: float, yaw: float) -> TransformStamped:
+    """Build the transform of a child frame in a parent frame at a stamp."""
+    transform = _stamped(TransformStamped(), stamp, parent)
     transform.child_frame_id = child
     transform.transform.translation.x = x
     transform.transform.translation.y = y
     transform.transform.rotation.z = math.sin(yaw / 2.0)
     transform.transform.rotation.w = math.cos(yaw / 2.0)
-    tf_buffer = Buffer()
-    tf_buffer.set_transform_static(transform, "test")
-    return tf_buffer
+    return transform

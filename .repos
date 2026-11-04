@@ -10,7 +10,7 @@ repositories:
     url: https://github.com/ika-rwth-aachen/perception_interfaces.git
     version: v1.1.0
   # only needed for the route_planning_msgs package, which carries the route the closed-loop evaluation measures the
-  # progress along
+  # progress along, and the trajectory_planning_msgs package, which carries the trajectories a planner publishes
   planning_interfaces:
     type: git
     url: https://github.com/ika-rwth-aachen/planning_interfaces.git

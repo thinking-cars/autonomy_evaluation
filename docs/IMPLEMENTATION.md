@@ -246,18 +246,24 @@ The results hold the `metrics` over all evaluated samples and, under `scenes`, t
 
 ### Trajectory Deviation
 
-Compares two trajectories of the ego vehicle, an evaluated and a reference trajectory, each read from a `perception_msgs/EgoData` input and taken from the source configured for it: `planned`, the `trajectory_planned` of each message, whose states are stamped with the times they are planned for, or `driven`, the states the input reports at the following samples of the same sequence. By the sources and the topics of both inputs, one evaluation answers several questions:
+Compares two trajectories of the ego vehicle, an evaluated and a reference trajectory, each read from an input and taken from the source configured for it, which also determines the type of its messages:
+
+- `planned`: the `trajectory_planned` of a `perception_msgs/EgoData`, whose states are stamped with the times they are planned for;
+- `driven`: the states that `perception_msgs/EgoData` messages report at the following samples of the same sequence;
+- `trajectory`: a `trajectory_planning_msgs/Trajectory` of [planning_interfaces](https://github.com/ika-rwth-aachen/planning_interfaces), as a planner publishes it, whose sample points are reached at the stamp of the message plus their time `T`.
+
+By the sources and the topics of both inputs, one evaluation answers several questions:
 
 | Question | `evaluated` | `evaluated_source` | `reference` | `reference_source` |
 | --- | --- | --- | --- | --- |
-| How well does the controller follow the plan? | ego data of the system under test | `driven` | same topic | `planned` |
-| How far does a planner deviate from a ground truth, e.g. a recorded human driver (open loop)? | ego data of the system under test | `planned` | ego data of the ground truth | `driven` |
-| How far do two planners deviate from each other? | ego data of the first planner | `planned` | ego data of the second planner | `planned` |
+| How well does the controller follow the plan? | ego data of the system under test | `driven` | same topic, or the trajectory of the planner | `planned`, or `trajectory` |
+| How far does a planner deviate from a ground truth, e.g. a recorded human driver (open loop)? | ego data or trajectory of the system under test | `planned` or `trajectory` | ego data of the ground truth | `driven` |
+| How far do two planners deviate from each other? | ego data or trajectory of the first planner | `planned` or `trajectory` | ego data or trajectory of the second planner | `planned` or `trajectory` |
 
 | Topic | Type | Role | Description |
 | --- | --- | --- | --- |
-| `evaluated` | `perception_msgs/EgoData` | evaluated | ego vehicle whose trajectory is evaluated |
-| `reference` | `perception_msgs/EgoData` | reference | ego vehicle whose trajectory is the reference, not read by `consistency`; may be the same topic as `evaluated` |
+| `evaluated` | `perception_msgs/EgoData`, or `trajectory_planning_msgs/Trajectory` for source `trajectory` | evaluated | ego vehicle or plan whose trajectory is evaluated |
+| `reference` | `perception_msgs/EgoData`, or `trajectory_planning_msgs/Trajectory` for source `trajectory` | reference | ego vehicle or plan whose trajectory is the reference, not read by `consistency`; may be the same topic as `evaluated` |
 
 ```bash
 # how well the controller follows the plan of a stack that publishes its planned trajectory with its ego data
@@ -266,13 +272,22 @@ ros2 launch autonomy_evaluation autonomy_evaluation.launch.py \
   evaluated:=/localization/ego_state_estimation/ego_data \
   reference:=/localization/ego_state_estimation/ego_data \
   config:=/config/controller.yml  # trajectory_deviation: {evaluated_source: driven, reference_source: planned}
+
+# the same against the trajectory the planner publishes for the rear axle in the frame of the vehicle, e.g. base_link
+ros2 launch autonomy_evaluation autonomy_evaluation.launch.py \
+  evaluation:=trajectory_deviation \
+  evaluated:=/localization/ego_state_estimation/ego_data \
+  reference:=/planning/trajectory_optimization/trajectory \
+  config:=/config/controller.yml  # trajectory_deviation: {evaluated_source: driven, reference_source: trajectory,
+                                  #   fixed_frame: map, base_link_to_geometric_center: [1.4895, 0.0]}
 ```
 
 Metrics are computed based on the following assumptions:
 
 - **Poses** are those of the geometric center, i.e. the position of a state moved by the `translation_to_geometric_center` of its reference point, the velocity is the longitudinal velocity of a state. A trajectory has velocities only if all its states set them.
-- **Planned trajectories** need at least two states with strictly increasing stamps; a trajectory whose states are not stamped is not compared. **Driven trajectories** run through the states of the samples of a sequence, so the last sample of a sequence has none.
-- **Frames**: all trajectories are compared in the frame of `reference`; an evaluated trajectory in another frame is transformed with the transform tf2 holds at the stamp of its message. Consecutive planned trajectories of `consistency` are taken to be in the same frame.
+- **Trajectory messages** name no reference point: their sample points are taken to describe the origin of `base_link`, the reference point of the vehicle following [REP 105](https://www.ros.org/reps/rep-0105.html), e.g. its rear axle, whatever frame they are given in, and are moved by `base_link_to_geometric_center`, the translation from there to the geometric center along and across the heading, e.g. `[1.4895, 0.0]` for a vehicle whose `EgoData` has that `translation_to_geometric_center` from its rear axle. The value applies to every input with source `trajectory`, as both describe the same vehicle. The heading is that of the sample points; a `REFERENCE` trajectory has none and heads along its direction of travel, opposite to it at a negative velocity, keeps its heading while it stands, and heads along the x axis of its frame if it does not move at all.
+- **Planned trajectories** need at least two states or sample points with strictly increasing times; a trajectory whose states are not stamped is not compared. **Driven trajectories** run through the states of the samples of a sequence, so the last sample of a sequence has none.
+- **Frames**: all trajectories are compared in `fixed_frame`, else in the frame of `reference`; a trajectory in another frame is transformed with the transform tf2 holds at the stamp of its message, so the frame compared in must be fixed, e.g. `map`. With a `trajectory` source, `fixed_frame` must be set, as planners often publish in the frame of the vehicle, e.g. `base_link`. The planned trajectories of `consistency` are compared in `fixed_frame` too, else taken to be in the same frame.
 - **Comparison**: at each sample, both trajectories are interpolated linearly every `time_step` from the stamp of the sample on, within the `horizon` and the time both cover. At each of these times, the evaluated pose deviates from the reference pose by its `displacement`, its `longitudinal` and `lateral` displacement along and across the heading of the reference, positive ahead and to the left, its `heading`, and its `velocity`, positive if faster. A metric is averaged over the compared times of a sample, and then over the compared samples, e.g. the average displacement error (ADE); the final displacement error (FDE) is the displacement at the last compared time of a sample.
 - **Consistency**: each planned trajectory of `evaluated` is compared with the one it planned at the previous sample of the sequence, likewise.
 
@@ -281,7 +296,9 @@ Metrics are computed based on the following assumptions:
 | Entry | Default | Description |
 | --- | --- | --- |
 | `metrics` | `[displacement, longitudinal, lateral, heading, velocity, consistency]` | selected metrics |
-| `evaluated_source`, `reference_source` | `planned`, `driven` | whether the trajectory of each input is the `planned` or the `driven` one |
+| `evaluated_source`, `reference_source` | `planned`, `driven` | whether the trajectory of each input is the one `planned` in its `EgoData`, the one `driven`, or a `trajectory` message |
+| `fixed_frame` | `""` | fixed frame the trajectories are compared in, e.g. `map`; the frame of `reference` if empty; required with a `trajectory` source |
+| `base_link_to_geometric_center` | `[0.0, 0.0]` | translation `[x, y]` in meters from the origin of `base_link`, the point of the vehicle that the sample points of `trajectory` messages describe, e.g. the rear axle, to the geometric center |
 | `horizon` | `5.0` | seconds after each sample over which the trajectories are compared |
 | `time_step` | `0.1` | seconds between the compared times |
 | `displacement.horizons` | `[1.0, 3.0]` | seconds after the sample at which the displacement is reported on its own |
@@ -411,7 +428,7 @@ The node logs whether the metrics over all samples passed their limits once the 
 
 #### Sequences of samples
 
-Most metrics treat every sample on its own, e.g. the average precision of a detector. Others depend on the order of the samples and the time between them, e.g. the jerk of the ego vehicle or the time between two road users passing the same spot. They are computed on contiguous sequences of samples: two consecutive samples belong to the same sequence if they belong to the same scene, the later one is stamped after the earlier one, they are at most `max_sample_interval` seconds apart, and, for an evaluation that reports a position per sample, the position does not jump faster than `max_jump_speed`, e.g. when a simulation teleports the ego vehicle to the start of a scenario. The closed-loop evaluation reports the position of the ego vehicle, the trajectory deviation that of the `reference`. Within a sequence, an interval of more than 1.5 times the sampling period is a gap, i.e. samples are missing, e.g. because the system under test skipped them or the evaluation did not keep up with a live system.
+Most metrics treat every sample on its own, e.g. the average precision of a detector. Others depend on the order of the samples and the time between them, e.g. the jerk of the ego vehicle or the time between two road users passing the same spot. They are computed on contiguous sequences of samples: two consecutive samples belong to the same sequence if they belong to the same scene, the later one is stamped after the earlier one, they are at most `max_sample_interval` seconds apart, and, for an evaluation that reports a position per sample, the position does not jump faster than `max_jump_speed`, e.g. when a simulation teleports the ego vehicle to the start of a scenario. The closed-loop evaluation reports the position of the ego vehicle, the trajectory deviation that of the ego vehicle of `reference`, else of `evaluated`, whichever is read as `EgoData`. Within a sequence, an interval of more than 1.5 times the sampling period is a gap, i.e. samples are missing, e.g. because the system under test skipped them or the evaluation did not keep up with a live system.
 
 The results describe how regularly the samples were evaluated under `sampling`, over all samples and per scene:
 
