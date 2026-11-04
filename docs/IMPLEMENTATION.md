@@ -378,6 +378,7 @@ Each evaluation is configured by nested entries with default values, which hold
 
 - `max_sample_interval`: seconds between two consecutive samples beyond which they belong to different sequences (default `1.0`),
 - `max_jump_speed`: speed in `m/s` beyond which the position of the samples jumps between two consecutive samples, which then belong to different sequences (default `100.0`, see [Sequences of samples](#sequences-of-samples)),
+- `warm_up`: seconds at the start of each scene, or of all samples without scene, whose samples are left out of the metrics and only counted as `num_warm_up_samples`, e.g. while a simulation places the ego vehicle at the start of its scenario and sets its initial speed (default `0.0`),
 - `limits`: optional limits judging the metrics as passed or failed (none by default, see [Limits](#limits)),
 - the entries the evaluation shares among all its metrics,
 - `metrics`: the selected metrics, each by the name of a metric, of a group of metrics, or of a metric of a group as `<group>.<metric>`; all metrics by default,

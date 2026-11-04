@@ -618,6 +618,7 @@ class TestConfigureEvaluation:
             "configurable.max_jump_speed",
             "configurable.max_sample_interval",
             "configurable.metrics",
+            "configurable.warm_up",
         ]
         assert all(descriptor.read_only and descriptor.dynamic_typing for descriptor in node.declared.values())
 

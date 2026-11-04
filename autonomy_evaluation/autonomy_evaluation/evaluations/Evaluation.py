@@ -55,6 +55,8 @@ _BASE_CONFIG: Dict[str, Any] = {
     "max_sample_interval": 1.0,
     # speed in m/s beyond which the position of the samples jumps, e.g. a teleport, starting a new sequence (see sampling.py)
     "max_jump_speed": 100.0,
+    # seconds at the start of each scene whose samples are left out of the metrics, e.g. while a simulation sets up a scenario
+    "warm_up": 0.0,
     # optional limits judging the metrics as passed or failed, none by default (see limits.py)
     "limits": [],
 }
@@ -222,6 +224,10 @@ class Evaluation(ABC):
         * ``max_jump_speed``: speed in m/s beyond which the position of the
           samples (:meth:`sample_position`) jumps between two consecutive
           samples, which then belong to different sequences (default ``100.0``),
+        * ``warm_up``: seconds at the start of each scene, or of all samples
+          without scene, whose samples are left out of the metrics, e.g. while
+          a simulation sets up its scenario (default ``0.0``, see
+          :meth:`evaluated_sample_results`),
         * ``limits``: optional limits judging the metrics as passed or
           failed, see :mod:`~autonomy_evaluation.evaluations.limits` (none by
           default),
@@ -573,7 +579,7 @@ class Evaluation(ABC):
         name of the group; ``_value_`` holds the aggregated value of
         :attr:`HEADLINE_METRIC`, ``None`` without one.
         """
-        aggregation = Aggregation(sample_results, self._sample_results, self.config)
+        aggregation = Aggregation(sample_results, self.evaluated_sample_results(), self.config)
         for name, metric in self.computed_metrics().items():
             aggregation.results[name] = metric.aggregate(aggregation)
 
@@ -709,8 +715,38 @@ class Evaluation(ABC):
         """
         return None
 
-    def sample_results_by_scene(self) -> Dict[str, List[Dict[str, Any]]]:
+    def evaluated_sample_results(self) -> List[Dict[str, Any]]:
+        """Return the recorded samples the metrics are aggregated over: all but those of the warm-up.
+
+        The samples of the first ``warm_up`` seconds of each scene, or of all
+        samples recorded without scene, are left out, e.g. while a simulation
+        places the ego vehicle at the start of its scenario and sets its initial
+        speed. Samples without stamp are never left out.
+
+        Returns
+        -------
+        The recorded samples after the warm-up, in the order they were recorded.
+        """
+        warm_up = self.config.get("warm_up", 0.0)
+        if warm_up <= 0.0:
+            return list(self._sample_results)
+        starts: Dict[Any, float] = {}
+        for entry in self._sample_results:
+            if entry.get("stamp") is not None:
+                starts[entry.get("scene_id")] = min(entry["stamp"], starts.get(entry.get("scene_id"), entry["stamp"]))
+        return [
+            entry
+            for entry in self._sample_results
+            if entry.get("stamp") is None or entry["stamp"] >= starts[entry.get("scene_id")] + warm_up
+        ]
+
+    def sample_results_by_scene(self, entries: Optional[List[Dict[str, Any]]] = None) -> Dict[str, List[Dict[str, Any]]]:
         """Group the recorded samples by the scene of the dataset they belong to.
+
+        Parameters
+        ----------
+        entries:
+            Recorded samples to group, all recorded samples by default.
 
         Returns
         -------
@@ -719,7 +755,7 @@ class Evaluation(ABC):
         out, as they cannot be attributed to one.
         """
         scenes: Dict[str, List[Dict[str, Any]]] = {}
-        for entry in self._sample_results:
+        for entry in self._sample_results if entries is None else entries:
             scene_id = entry.get("scene_id")
             if scene_id is not None:
                 scenes.setdefault(str(scene_id), []).append(entry)
@@ -747,16 +783,18 @@ class Evaluation(ABC):
             they are not mistaken for the results over the whole dataset.
         """
         max_sample_interval, max_jump_speed = self.config["max_sample_interval"], self.config["max_jump_speed"]
-        aggregated = self.compute_aggregated_metrics(self._sample_results)
-        scenes = self.sample_results_by_scene()
+        evaluated = self.evaluated_sample_results()
+        aggregated = self.compute_aggregated_metrics(evaluated)
+        scenes = self.sample_results_by_scene(evaluated)
         results = {
             "evaluation": self.name,
             "version": self.version,
             "description": self.description,
             "complete": complete,
-            "num_samples": len(self._sample_results),
+            "num_samples": len(evaluated),
+            "num_warm_up_samples": len(self._sample_results) - len(evaluated),
             "num_scenes": len(scenes),
-            "sampling": sampling_statistics(self._sample_results, max_sample_interval, max_jump_speed),
+            "sampling": sampling_statistics(evaluated, max_sample_interval, max_jump_speed),
             "inputs": {
                 name: {
                     "type": _type_name(declared.msg_type),

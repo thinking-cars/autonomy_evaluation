@@ -702,6 +702,7 @@ class TestConfiguration:
         assert _ComposedEvaluation().config_defaults() == {
             "max_sample_interval": 1.0,
             "max_jump_speed": 100.0,
+            "warm_up": 0.0,
             "limits": [],
             "unit": "m",
             "metrics": ["num_objects", "proximity", "objects_per_sample", "speed"],
@@ -749,7 +750,7 @@ class TestConfiguration:
 
     def test_evaluation_without_building_blocks_is_configured_too(self):
         """An evaluation computing its metrics itself has the configuration every evaluation has."""
-        assert CountingEvaluation().config == {"max_sample_interval": 1.0, "max_jump_speed": 100.0, "limits": []}
+        assert CountingEvaluation().config == {"max_sample_interval": 1.0, "max_jump_speed": 100.0, "warm_up": 0.0, "limits": []}
 
     def test_flattened_configuration_names_nested_entries_by_their_joined_keys(self):
         """ROS parameters name nested entries by their keys joined with '.', lists are values."""
@@ -837,3 +838,24 @@ class TestLimits:
         """A malformed limit, or one on a metric that is not computed, is rejected when configuring."""
         with pytest.raises(ValueError, match=error):
             _ComposedEvaluation().configure({"metrics": ["num_objects"], "limits": limits})
+
+
+class TestWarmUp:
+    """Tests leaving the samples of the first seconds of each scene out of the metrics."""
+
+    def test_samples_of_the_warm_up_of_each_scene_are_left_out(self):
+        """Scene 'a' starts at 0 s and 'b' at 1 s, so a warm-up of 0.5 s leaves out the first sample of each."""
+        evaluation = _ComposedEvaluation()
+        evaluation.configure({"warm_up": 0.5})
+
+        results = _record(evaluation, _SAMPLES).finalize()
+
+        assert (results["num_samples"], results["num_warm_up_samples"]) == (1, 2)
+        assert results["metrics"]["num_objects"]["_value_"] == 1
+        assert list(results["scenes"]) == ["a"]
+
+    def test_without_warm_up_all_samples_are_evaluated(self):
+        """The warm-up is optional, and none by default."""
+        results = _record(_ComposedEvaluation(), _SAMPLES).finalize()
+
+        assert (results["num_samples"], results["num_warm_up_samples"]) == (3, 0)
