@@ -202,14 +202,14 @@ class Aggregation:
     def sequences(self) -> List[List[Dict[str, Any]]]:
         """Split the samples into contiguous sequences.
 
-        Two consecutive samples belong to the same sequence if they belong to
-        the same scene, are in order, at most the configured
-        ``max_sample_interval`` apart and their positions, if known, do not
-        jump faster than ``max_jump_speed`` (see
+        The samples of a scene are put in stamp order. Two consecutive samples
+        belong to the same sequence if they belong to the same scene, at most
+        the configured ``max_sample_interval`` apart and their positions, if
+        known, do not jump faster than ``max_jump_speed`` (see
         :func:`~autonomy_evaluation.evaluations.sampling.split_into_sequences`).
 
         Returns:
-            The sequences of :attr:`entries`, each in recording order.
+            The sequences of :attr:`entries`, each in stamp order.
         """
         return self.memo(
             "sequences",

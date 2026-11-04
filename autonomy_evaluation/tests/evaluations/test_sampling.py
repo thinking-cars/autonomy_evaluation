@@ -45,6 +45,19 @@ class TestSplitIntoSequences:
 
         assert _sample_ids(split_into_sequences(entries, max_sample_interval=1.0)) == [["0", "1"], ["2", "3"]]
 
+    def test_samples_recorded_out_of_order_are_put_in_stamp_order(self):
+        """A sample whose messages were matched within a tolerance may complete after a later sample."""
+        entries = _entries(("a", 0.0), ("a", 0.1), ("a", 0.05), ("a", 0.15), ("a", 0.25), ("a", 0.2))
+
+        assert _sample_ids(split_into_sequences(entries, max_sample_interval=1.0)) == [["0", "2", "1", "3", "5", "4"]]
+        assert sampling_statistics(entries, 1.0)["num_gaps"] == 0
+
+    def test_a_restart_starts_a_new_sequence(self):
+        """A stamp further back than the maximum interval, e.g. of a restarted simulation, is not reordered."""
+        entries = _entries(("a", 10.0), ("a", 10.1), ("a", 0.0), ("a", 0.1), ("a", 10.05))
+
+        assert _sample_ids(split_into_sequences(entries, max_sample_interval=1.0)) == [["0", "1"], ["2", "3"], ["4"]]
+
     def test_a_long_interruption_starts_a_new_sequence(self):
         """Samples further apart than the maximum interval belong to different sequences."""
         entries = _entries(("a", 0.0), ("a", 0.5), ("a", 2.0))

@@ -9,12 +9,17 @@ e.g. the jerk of the ego vehicle or the time between two road users passing the
 same spot. Such metrics are computed on contiguous sequences of samples, which
 must neither span two scenes of a dataset nor bridge a long interruption.
 
-Samples are recorded in the order they are evaluated, i.e. published. Two
-consecutive samples belong to the same sequence if
+Samples are recorded in the order they are evaluated, i.e. once all their
+messages have arrived. A sample can thus be recorded after a later one, e.g.
+when its messages are matched within a tolerance and one arrives late, so the
+samples of a scene are put in stamp order, unless a stamp lies more than
+``max_sample_interval`` seconds before the latest one recorded, as when a
+dataset continues with a scene recorded before the scene played before it, or a
+simulation restarts. Two consecutive samples in this order then belong to the
+same sequence if
 
 - they belong to the same scene, as far as their scenes are known,
-- the later one is stamped after the earlier one, as a dataset may continue
-  with a scene that was recorded before the scene played before it, and
+- the later one is stamped after the earlier one,
 - they are at most ``max_sample_interval`` seconds apart, and
 - where the evaluation reports a position per sample, e.g. that of the ego
   vehicle, the position does not jump between them faster than
@@ -53,22 +58,51 @@ def split_into_sequences(
             two consecutive samples, which then belong to different sequences.
 
     Returns:
-        The sequences, each a list of consecutive samples, in recording order.
-        Samples without stamp continue the sequence of the previous sample of
-        their scene, as no interval can be measured.
+        The sequences in the order they were recorded, each a list of
+        consecutive samples in stamp order. Samples without stamp continue the
+        sequence of the previous sample of their scene, as no interval can be
+        measured, and keep the samples around them in recording order.
     """
 
     sequences: List[List[Dict[str, Any]]] = []
-    for entry in entries:
-        if (
-            sequences
-            and _continues(sequences[-1][-1], entry, max_sample_interval)
-            and not _jumps(sequences[-1][-1], entry, max_jump_speed)
-        ):
-            sequences[-1].append(entry)
-        else:
-            sequences.append([entry])
+    for run in _runs_in_stamp_order(entries, max_sample_interval):
+        sequences.append([run[0]])
+        for entry in run[1:]:
+            if _continues(sequences[-1][-1], entry, max_sample_interval) and not _jumps(sequences[-1][-1], entry, max_jump_speed):
+                sequences[-1].append(entry)
+            else:
+                sequences.append([entry])
     return sequences
+
+
+def _runs_in_stamp_order(entries: List[Dict[str, Any]], max_sample_interval: float) -> List[List[Dict[str, Any]]]:
+    """Group the samples recorded one after the other that may form sequences, and sort each group by stamp.
+
+    A group ends where the scene changes or a stamp lies more than
+    ``max_sample_interval`` before the latest stamp of the group, e.g. when a
+    simulation restarts. Within a group, samples recorded out of order are put
+    in stamp order, unless a sample has no stamp to order it by.
+    """
+    runs: List[List[Dict[str, Any]]] = []
+    latest: Optional[float] = None
+    for entry in entries:
+        stamp = entry.get("stamp")
+        restarts = stamp is not None and latest is not None and stamp < latest - max_sample_interval
+        if runs and entry.get("scene_id") == runs[-1][-1].get("scene_id") and not restarts:
+            runs[-1].append(entry)
+        else:
+            runs.append([entry])
+            latest = None
+        if stamp is not None:
+            latest = stamp if latest is None else max(latest, stamp)
+    return [_in_stamp_order(run) for run in runs]
+
+
+def _in_stamp_order(run: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Sort samples by stamp, unless a sample has no stamp to order it by."""
+    if any(entry.get("stamp") is None for entry in run):
+        return run
+    return sorted(run, key=lambda entry: entry["stamp"])
 
 
 def _continues(previous: Dict[str, Any], entry: Dict[str, Any], max_sample_interval: float) -> bool:
