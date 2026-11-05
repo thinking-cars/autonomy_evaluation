@@ -4,8 +4,8 @@
 """Tests for the topics, the metrics, the configuration and the result store of the Evaluation base class.
 
 An evaluation reads the topics of a system under test and, if it compares them with a reference,
-ground-truth topics. It is either composed of metric building blocks, which are selected and
-configured per evaluation, or computes its metrics itself. Metrics are reported on three levels:
+ground-truth topics. It is composed of metric building blocks, which are selected and configured
+per evaluation. Metrics are reported on three levels:
 for every single sample, aggregated over the samples of each scene of the dataset, and aggregated
 over all evaluated samples. Minimal evaluations whose metrics are trivial to predict are used, so
 that the tests cover the topics, the composition and the grouping and not a metric definition.
@@ -14,90 +14,138 @@ that the tests cover the topics, the composition and the grouping and not a metr
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import pytest
 from autonomy_evaluation.evaluations.Evaluation import Evaluation, flatten_config, unflatten_config
-from autonomy_evaluation.evaluations.Metric import Aggregation, CONTEXT, EVALUATED, Input, Metric, MetricGroup, Sample
+from autonomy_evaluation.evaluations.Metric import Aggregation, CONTEXT, EVALUATED, Input, Metric, MetricGroup, REFERENCE, Sample
+
+
+class _NumPredictions(Metric):
+    """Sums the number of predictions, which a sample holds as its prediction."""
+
+    NAME = "num_predictions"
+
+    def inputs(self) -> Dict[str, Input]:
+        """Read the evaluated predictions."""
+        return {"prediction": Input(object, EVALUATED)}
+
+    def compute_sample(self, sample: Sample) -> int:
+        """Report the number of predictions of a sample."""
+        return sample["prediction"]
+
+    def aggregate(self, aggregation: Aggregation) -> Dict[str, Any]:
+        """Sum the predictions of the samples."""
+        return {"_value_": sum(aggregation.records(self.name))}
+
+
+class _NumLabels(Metric):
+    """Sums the number of labels, which a sample holds as its label."""
+
+    NAME = "num_labels"
+
+    def inputs(self) -> Dict[str, Input]:
+        """Read the labels the predictions are compared with."""
+        return {"label": Input(object, REFERENCE)}
+
+    def compute_sample(self, sample: Sample) -> int:
+        """Report the number of labels of a sample."""
+        return sample["label"]
+
+    def aggregate(self, aggregation: Aggregation) -> Dict[str, Any]:
+        """Sum the labels of the samples."""
+        return {"_value_": sum(aggregation.records(self.name))}
 
 
 class CountingEvaluation(Evaluation):
-    """Minimal evaluation counting the objects of a sample and summing them up when aggregating."""
+    """Minimal evaluation counting the predictions and labels of a sample and summing them up when aggregating."""
 
     def __init__(self) -> None:
         """Name the evaluation."""
         super().__init__(name="counting", description="counts objects")
 
-    def required_inputs(self) -> Dict[str, Any]:
-        """Declare the evaluated input, which this evaluation does not read from ROS messages."""
-        return {"prediction": object}
+    def metrics(self):
+        """Compose the evaluation of the counts."""
+        return [_NumPredictions(), _NumLabels()]
 
-    def required_ground_truth(self) -> Dict[str, Any]:
-        """Declare the ground truth the input is compared with."""
-        return {"label": object}
 
-    def compute_sample_metrics(self, prediction: Any, label: Any, sample_id: Optional[str] = None) -> Dict[str, Any]:
-        """Report the given prediction and label counts of a single sample."""
-        return {"num_predictions": prediction, "num_labels": label}
+def _counts(num_predictions: int, num_labels: int) -> Dict[str, Any]:
+    """Aggregated metrics of the counting evaluation, which reports no headline value."""
+    return {"_value_": None, "num_predictions": {"_value_": num_predictions}, "num_labels": {"_value_": num_labels}}
 
-    def compute_aggregated_metrics(self, sample_results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Sum the counts of the given samples."""
-        return {
-            "num_predictions": sum(entry["metrics"]["num_predictions"] for entry in sample_results),
-            "num_labels": sum(entry["metrics"]["num_labels"] for entry in sample_results),
-        }
+
+class _MinDistance(Metric):
+    """Reports the distance of the closest object, read from the system under test alone."""
+
+    NAME = "min_distance"
+
+    def inputs(self) -> Dict[str, Input]:
+        """Read the ego position and the object positions, as a planner is evaluated on in closed loop."""
+        return {"ego_position": Input(object, EVALUATED), "object_positions": Input(object, EVALUATED)}
+
+    def compute_sample(self, sample: Sample) -> float:
+        """Report the distance of the closest object of a sample."""
+        return min(abs(position - sample["ego_position"]) for position in sample["object_positions"])
+
+    def aggregate(self, aggregation: Aggregation) -> Dict[str, Any]:
+        """Report the closest distance of all samples."""
+        return {"_value_": min(aggregation.records(self.name))}
 
 
 class ClosestObjectEvaluation(Evaluation):
-    """Minimal evaluation of inputs only, reporting the closest object without any ground truth."""
+    """Minimal evaluation of inputs only, reporting the closest object without any reference."""
 
     def __init__(self) -> None:
         """Name the evaluation."""
         super().__init__(name="closest_object")
 
-    def required_inputs(self) -> Dict[str, Any]:
-        """Declare the ego position and the object distances, as a closed-loop planner is evaluated on."""
-        return {"ego_position": object, "object_positions": object}
-
-    def compute_sample_metrics(self, ego_position: float, object_positions: List[float], sample_id: Optional[str] = None):
-        """Report the distance of the closest object of a single sample."""
-        return {"min_distance": min(abs(position - ego_position) for position in object_positions)}
-
-    def compute_aggregated_metrics(self, sample_results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Report the closest distance of all given samples."""
-        return {"min_distance": min(entry["metrics"]["min_distance"] for entry in sample_results)}
+    def metrics(self):
+        """Compose the evaluation of the closest distance."""
+        return [_MinDistance()]
 
 
-class _TopicsEvaluation(CountingEvaluation):
-    """Counting evaluation with freely declared topics, to test their validation."""
+class _InputsMetric(Metric):
+    """Metric reading freely declared inputs, to test their validation."""
 
-    def __init__(
-        self,
-        inputs: Dict[str, Any],
-        ground_truth: Dict[str, Any],
-        derived_topics=None,
-        optional_ground_truth=None,
-    ) -> None:
-        """Declare the given topics."""
-        super().__init__()
-        self._inputs, self._ground_truth, self._derived_topics = inputs, ground_truth, derived_topics or {}
-        self._optional_ground_truth = optional_ground_truth or {}
+    NAME = "inputs"
 
-    def required_inputs(self) -> Dict[str, Any]:
+    def __init__(self, inputs: Dict[str, Input]) -> None:
         """Declare the given inputs."""
+        super().__init__()
+        self._inputs = inputs
+
+    def inputs(self) -> Dict[str, Input]:
+        """Read the given inputs."""
         return self._inputs
 
-    def required_ground_truth(self) -> Dict[str, Any]:
-        """Declare the given ground truth."""
-        return self._ground_truth
+    def aggregate(self, aggregation: Aggregation) -> Dict[str, Any]:
+        """Report nothing."""
+        return {"_value_": None}
 
-    def optional_ground_truth(self) -> Dict[str, Any]:
-        """Declare the given optional ground truth."""
-        return self._optional_ground_truth
 
-    def derived_topics(self):
-        """Declare the given derived topics."""
-        return self._derived_topics
+class _InputsEvaluation(Evaluation):
+    """Evaluation of a single metric with freely declared inputs."""
+
+    def __init__(self, inputs: Dict[str, Input]) -> None:
+        """Declare the given inputs."""
+        super().__init__(name="inputs")
+        self._inputs = inputs
+
+    def metrics(self):
+        """Compose the evaluation of the metric with the given inputs."""
+        return [_InputsMetric(self._inputs)]
+
+
+class _EmptyEvaluation(Evaluation):
+    """Evaluation composed of no metric."""
+
+    def __init__(self) -> None:
+        """Name the evaluation."""
+        super().__init__(name="empty")
+
+    def metrics(self):
+        """Compose the evaluation of nothing."""
+        return []
 
 
 def _evaluation_of(samples) -> CountingEvaluation:
@@ -111,65 +159,64 @@ def _evaluation_of(samples) -> CountingEvaluation:
 class TestTopics:
     """Tests declaring the topics an evaluation reads."""
 
-    def test_inputs_are_followed_by_the_ground_truth(self):
-        """The topics are passed to the evaluation in the order inputs first, ground truth second."""
-        assert list(CountingEvaluation().all_inputs()) == ["prediction", "label"]
+    def test_inputs_keep_the_order_and_the_roles_of_their_metrics(self):
+        """The topics are read in the order the metrics declare them, each in the role its metric declares."""
+        inputs = CountingEvaluation().inputs()
 
-    def test_evaluation_of_inputs_only_needs_no_ground_truth(self):
-        """An evaluation computing its metrics from the system under test alone declares no ground truth."""
-        evaluation = ClosestObjectEvaluation()
+        assert {name: declared.role for name, declared in inputs.items()} == {"prediction": EVALUATED, "label": REFERENCE}
+        assert list(inputs) == ["prediction", "label"]
 
-        assert evaluation.required_ground_truth() == {}
-        assert evaluation.derived_topics() == {}
-        assert list(evaluation.all_inputs()) == ["ego_position", "object_positions"]
+    def test_evaluation_of_inputs_only_needs_no_reference(self):
+        """An evaluation computing its metrics from the system under test alone reads no reference."""
+        inputs = ClosestObjectEvaluation().inputs()
 
-    def test_rejects_a_topic_declared_as_input_and_as_ground_truth(self):
-        """A topic name identifies a single message of a sample, so it cannot play both roles."""
-        with pytest.raises(ValueError, match="as input and as ground truth"):
-            _TopicsEvaluation({"objects": object}, {"objects": object}).all_inputs()
+        assert {name: declared.role for name, declared in inputs.items()} == {
+            "ego_position": EVALUATED,
+            "object_positions": EVALUATED,
+        }
 
-    def test_rejects_an_evaluation_without_topics(self):
-        """An evaluation that reads no topic would never evaluate a sample."""
-        with pytest.raises(ValueError, match="no topic"):
-            _TopicsEvaluation({}, {}).all_inputs()
+    def test_every_evaluation_is_composed_of_metrics(self):
+        """An evaluation that declares no metrics cannot be instantiated, one composed of no metric selects none."""
+        with pytest.raises(TypeError, match="metrics"):
+            Evaluation(name="bare")  # pylint: disable=abstract-class-instantiated
+        with pytest.raises(ValueError, match="selects no metric"):
+            _EmptyEvaluation().inputs()
 
     @pytest.mark.parametrize(
-        "derived_topics",
-        [{"meta_info": ("label", "/meta_info")}, {"label": ("objects", "/meta_info")}, {"label": ("label", "/meta_info")}],
+        "inputs",
+        [{}, {"label": Input(object, REFERENCE, optional=True)}],
+        ids=["no topic", "optional topics only"],
     )
-    def test_rejects_a_derived_topic_of_unknown_inputs(self, derived_topics):
-        """A derived topic and the topic it is derived from must both be read by the evaluation."""
-        with pytest.raises(ValueError, match="derives the topic"):
-            _TopicsEvaluation({"prediction": object}, {"label": object}, derived_topics).all_inputs()
-
-    def test_optional_ground_truth_follows_the_required_topics(self):
-        """Optional ground truth is read next to the required topics, after them."""
-        evaluation = _TopicsEvaluation(
-            {"prediction": object}, {"label": object}, optional_ground_truth={"label_meta_info": object}
-        )
-
-        assert list(evaluation.all_inputs()) == ["prediction", "label", "label_meta_info"]
-
-    def test_rejects_a_topic_declared_as_required_and_as_optional(self):
-        """A topic is either waited for or not, so it cannot be required and optional at once."""
-        with pytest.raises(ValueError, match="as ground truth and as optional ground truth"):
-            _TopicsEvaluation({"prediction": object}, {"label": object}, optional_ground_truth={"label": object}).all_inputs()
-
-    def test_rejects_an_evaluation_of_optional_topics_only(self):
+    def test_rejects_an_evaluation_without_required_topics(self, inputs):
         """A sample is only evaluated once its required topics have been received, so at least one is needed."""
         with pytest.raises(ValueError, match="no topic"):
-            _TopicsEvaluation({}, {}, optional_ground_truth={"label": object}).all_inputs()
+            _InputsEvaluation(inputs).inputs()
 
-    def test_optional_topic_may_be_derived_from_a_required_one(self):
+    @pytest.mark.parametrize(
+        "inputs",
+        [
+            {
+                "prediction": Input(object, EVALUATED),
+                "meta_info": Input(object, REFERENCE, optional=True, next_to=("label", "/meta_info")),
+            },
+            {"label": Input(object, REFERENCE, next_to=("label", "/meta_info"))},
+        ],
+        ids=["unknown topic", "itself"],
+    )
+    def test_rejects_a_topic_published_next_to_a_topic_it_does_not_read(self, inputs):
+        """A topic published next to another one must follow a topic the evaluation reads, other than itself."""
+        with pytest.raises(ValueError, match="derives the topic"):
+            _InputsEvaluation(inputs).inputs()
+
+    def test_optional_topic_may_be_published_next_to_a_required_one(self):
         """Meta information that not every dataset publishes follows the topic of the labels it belongs to."""
-        evaluation = _TopicsEvaluation(
-            {"prediction": object},
-            {"label": object},
-            derived_topics={"label_meta_info": ("label", "/meta_info")},
-            optional_ground_truth={"label_meta_info": object},
-        )
+        inputs = {
+            "prediction": Input(object, EVALUATED),
+            "label": Input(object, REFERENCE),
+            "label_meta_info": Input(object, REFERENCE, optional=True, next_to=("label", "/meta_info")),
+        }
 
-        assert "label_meta_info" in evaluation.all_inputs()
+        assert list(_InputsEvaluation(inputs).inputs()) == ["prediction", "label", "label_meta_info"]
 
 
 class TestSampleResults:
@@ -211,16 +258,16 @@ class TestFinalize:
 
         assert results["num_samples"] == 3
         assert results["num_scenes"] == 2
-        assert results["metrics"] == {"num_predictions": 7, "num_labels": 9}
+        assert results["metrics"] == _counts(7, 9)
         # an evaluation that does not tell its area has none
         assert results["area"] is None
         assert results["scenes"]["scene_a"] == {
             "num_samples": 2,
             "sample_ids": ["0", "1"],
             "sampling": {"num_sequences": 1, "period": None, "num_gaps": 0, "max_interval": None, "num_jumps": 0},
-            "metrics": {"num_predictions": 3, "num_labels": 4},
+            "metrics": _counts(3, 4),
         }
-        assert results["scenes"]["scene_b"]["metrics"] == {"num_predictions": 4, "num_labels": 5}
+        assert results["scenes"]["scene_b"]["metrics"] == _counts(4, 5)
         # The metrics of the single samples are no longer reported alongside the aggregated
         # results, while 'sample_results' is commented out in Evaluation.finalize()
         # assert [entry["metrics"] for entry in results["sample_results"]] == [
@@ -240,7 +287,7 @@ class TestFinalize:
         ).finalize()
 
         assert results["scenes"]["scene_a"]["sample_ids"] == ["0", "2"]
-        assert results["scenes"]["scene_a"]["metrics"]["num_predictions"] == 5
+        assert results["scenes"]["scene_a"]["metrics"]["num_predictions"]["_value_"] == 5
         assert results["scenes"]["scene_b"]["sample_ids"] == ["1"]
 
     def test_samples_without_a_scene_are_only_aggregated_over_the_evaluation(self):
@@ -249,8 +296,8 @@ class TestFinalize:
 
         assert results["num_samples"] == 2
         assert results["num_scenes"] == 1
-        assert results["metrics"]["num_predictions"] == 3
-        assert results["scenes"]["scene_a"]["metrics"]["num_predictions"] == 1
+        assert results["metrics"]["num_predictions"]["_value_"] == 3
+        assert results["scenes"]["scene_a"]["metrics"]["num_predictions"]["_value_"] == 1
 
     def test_aggregates_an_evaluation_of_inputs_only(self):
         """Samples of an evaluation without ground truth are recorded from their inputs alone."""
@@ -260,7 +307,7 @@ class TestFinalize:
 
         results = evaluation.finalize()
 
-        assert results["metrics"] == {"min_distance": 2.5}
+        assert results["metrics"] == {"_value_": None, "min_distance": {"_value_": 2.5}}
         assert results["scenes"]["scene_a"]["num_samples"] == 2
 
     def test_reports_no_scene_without_recorded_scenes(self):
@@ -281,7 +328,7 @@ class TestSaveResults:
         output_path = evaluation.save_results(str(tmp_path / "results" / "counting.json"))
 
         stored = json.loads(open(output_path).read())
-        assert stored["metrics"] == {"num_predictions": 3, "num_labels": 3}
+        assert stored["metrics"] == _counts(3, 3)
         assert sorted(stored["scenes"]) == ["scene_a", "scene_b"]
         # The single samples are no longer written alongside the aggregated
         # results, while 'sample_results' is commented out in Evaluation.finalize()
@@ -311,7 +358,7 @@ class TestIncompleteResults:
         assert results["complete"] is False
         # the samples that were evaluated are still reported
         assert results["num_samples"] == 1
-        assert results["metrics"] == {"num_predictions": 1, "num_labels": 1}
+        assert results["metrics"] == _counts(1, 1)
 
     def test_writes_incomplete_results_to_the_results_file(self, tmp_path):
         """The results file of an interrupted evaluation marks the results it holds as incomplete."""
@@ -321,7 +368,7 @@ class TestIncompleteResults:
 
         stored = json.loads(open(output_path).read())
         assert stored["complete"] is False
-        assert stored["metrics"] == {"num_predictions": 1, "num_labels": 1}
+        assert stored["metrics"] == _counts(1, 1)
 
     def test_written_results_keep_the_flag_they_were_finalized_with(self, tmp_path):
         """A given payload is written as it is, marked the way it was finalized."""
@@ -750,10 +797,6 @@ class TestConfiguration:
         with pytest.raises(ValueError, match="next to metrics of the same name"):
             _ComposedEvaluation(evaluation_config={"speed": 1.0}).config_defaults()
 
-    def test_evaluation_without_building_blocks_is_configured_too(self):
-        """An evaluation computing its metrics itself has the configuration every evaluation has."""
-        assert CountingEvaluation().config == {"max_sample_interval": 1.0, "max_jump_speed": 100.0, "warm_up": 0.0, "limits": []}
-
     def test_flattened_configuration_names_nested_entries_by_their_joined_keys(self):
         """ROS parameters name nested entries by their keys joined with '.', lists are values."""
         config = {"metrics": ["ap"], "ap": {"min_precision": 0.1, "matching_thresholds": [0.5, 1.0]}}
@@ -788,15 +831,6 @@ class TestResultsDescription:
         assert results["inputs"]["map"]["role"] == "context"
         assert results["config"] == evaluation.config
         assert results["sampling"] == {"num_sequences": 2, "period": 0.5, "num_gaps": 0, "max_interval": 0.5, "num_jumps": 0}
-
-    def test_inputs_of_an_evaluation_without_building_blocks_have_roles(self):
-        """Inputs are evaluated, ground truth is the reference."""
-        inputs = _evaluation_of([("0", "scene_a", 1, 1)]).finalize()["inputs"]
-
-        assert {name: description["role"] for name, description in inputs.items()} == {
-            "prediction": "evaluated",
-            "label": "reference",
-        }
 
 
 class TestLimits:

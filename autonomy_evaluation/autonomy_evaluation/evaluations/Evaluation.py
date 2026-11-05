@@ -18,14 +18,6 @@ not every dataset publishes, is declared as optional.
 Which metrics are computed and how is configured per evaluation (see
 :meth:`Evaluation.config_defaults`), e.g. by ROS parameters of the node. The
 evaluation only reads the topics of the metrics it computes.
-
-An evaluation without metric building blocks, e.g. one implemented in another
-package before they existed, declares its topics with
-:meth:`Evaluation.required_inputs`, :meth:`Evaluation.required_ground_truth`,
-:meth:`Evaluation.optional_ground_truth` and :meth:`Evaluation.derived_topics`,
-and computes its metrics itself by overriding
-:meth:`Evaluation.compute_sample_metrics` and
-:meth:`Evaluation.compute_aggregated_metrics`.
 """
 
 from __future__ import annotations
@@ -33,17 +25,15 @@ from __future__ import annotations
 import copy
 import json
 import os
-from abc import ABC
+from abc import ABC, abstractmethod
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from autonomy_evaluation.evaluations.limits import check_limits, Limit, parse_limits
 from autonomy_evaluation.evaluations.Metric import (
     Aggregation,
-    EVALUATED,
     Input,
     Metric,
     MetricGroup,
-    REFERENCE,
     Sample,
 )
 from autonomy_evaluation.evaluations.sampling import sampling_statistics
@@ -143,15 +133,14 @@ class Evaluation(ABC):
     # Metrics
     # ------------------------------------------------------------------
 
+    @abstractmethod
     def metrics(self) -> Sequence[Union[Metric, MetricGroup]]:
         """Compose the evaluation of its metrics.
 
         Returns:
             The metrics and groups of metrics of the evaluation, in the order
-            they are reported in; empty for an evaluation without metric
-            building blocks.
+            they are reported in.
         """
-        return []
 
     def available_metrics(self) -> Dict[str, Metric]:
         """Collect the metrics of the evaluation by their qualified names.
@@ -256,9 +245,6 @@ class Evaluation(ABC):
         """
         defaults = {**copy.deepcopy(_BASE_CONFIG), **self.default_config()}
         metrics = self.available_metrics()
-        if not metrics:
-            return defaults
-
         sections: Dict[str, Any] = {}
         for name, metric in metrics.items():
             metric_defaults = metric.default_config()
@@ -302,15 +288,13 @@ class Evaluation(ABC):
                 metric or itself.
         """
         effective = _merged(self.config_defaults(), config or {}, f"Evaluation '{self.name}'")
-        metrics = self.available_metrics()
-        if metrics:
-            selected = self._resolve_selection(effective[_METRICS_KEY])
-            computed = self._with_requirements(selected)
-            for name, metric in metrics.items():
-                group, _, key = name.rpartition(CONFIG_SEPARATOR)
-                section = effective.get(group, {}) if group else effective
-                metric.config = copy.deepcopy(section[key]) if metric.default_config() else {}
-            self._selected, self._computed = selected, computed
+        selected = self._resolve_selection(effective[_METRICS_KEY])
+        computed = self._with_requirements(selected)
+        for name, metric in self.available_metrics().items():
+            group, _, key = name.rpartition(CONFIG_SEPARATOR)
+            section = effective.get(group, {}) if group else effective
+            metric.config = copy.deepcopy(section[key]) if metric.default_config() else {}
+        self._selected, self._computed = selected, computed
         self._limits = self._parsed_limits(effective[_LIMITS_KEY])
         self._config = effective
         return effective
@@ -321,14 +305,13 @@ class Evaluation(ABC):
             limits = parse_limits(texts)
         except ValueError as exception:
             raise ValueError(f"Evaluation '{self.name}': {exception}") from exception
-        if self.available_metrics():
-            for limit in limits:
-                names = ["_value_", *self._selected]
-                if not any(limit.metric == name or limit.metric.startswith(f"{name}{CONFIG_SEPARATOR}") for name in names):
-                    raise ValueError(
-                        f"Evaluation '{self.name}' cannot check limit '{limit.text}', as it names none of the selected "
-                        f"metrics {self._selected}"
-                    )
+        for limit in limits:
+            names = ["_value_", *self._selected]
+            if not any(limit.metric == name or limit.metric.startswith(f"{name}{CONFIG_SEPARATOR}") for name in names):
+                raise ValueError(
+                    f"Evaluation '{self.name}' cannot check limit '{limit.text}', as it names none of the selected "
+                    f"metrics {self._selected}"
+                )
         return limits
 
     def _top_level_names(self) -> List[str]:
@@ -398,8 +381,6 @@ class Evaluation(ABC):
                 evaluation requires no topic, or a topic is published next to a
                 topic the evaluation does not read.
         """
-        if not self.available_metrics():
-            return self._declared_inputs()
         return self._merged_inputs(self.computed_metrics().values())
 
     def available_inputs(self) -> Dict[str, Input]:
@@ -408,17 +389,7 @@ class Evaluation(ABC):
         Returns:
             Input name to input of all metrics, like :meth:`inputs`.
         """
-        if not self.available_metrics():
-            return self._declared_inputs()
         return self._merged_inputs(self.available_metrics().values())
-
-    def all_inputs(self) -> Dict[str, Any]:
-        """Return the ROS message types of the topics the evaluation reads.
-
-        Returns:
-            Input name to ROS message type, in the order of :meth:`inputs`.
-        """
-        return {name: declared.msg_type for name, declared in self.inputs().items()}
 
     def _merged_inputs(self, metrics: Iterable[Metric]) -> Dict[str, Input]:
         """Merge the inputs of the given metrics, which must declare a shared input alike."""
@@ -435,30 +406,6 @@ class Evaluation(ABC):
                 declared_by.setdefault(name, metric.name)
         return self._validated(inputs)
 
-    def _declared_inputs(self) -> Dict[str, Input]:
-        """Turn the topics an evaluation without metric building blocks declares into inputs.
-
-        Its inputs are evaluated, its ground truth is the reference.
-        """
-        declared_topics = {
-            "input": (self.required_inputs(), EVALUATED, False),
-            "ground truth": (self.required_ground_truth(), REFERENCE, False),
-            "optional ground truth": (self.optional_ground_truth(), REFERENCE, True),
-        }
-        derived_topics = self.derived_topics()
-        inputs: Dict[str, Input] = {}
-        roles: Dict[str, str] = {}
-        for role, (topics, input_role, optional) in declared_topics.items():
-            for name, msg_type in topics.items():
-                if name in roles:
-                    raise ValueError(f"Evaluation '{self.name}' declares '{name}' as {roles[name]} and as {role}")
-                inputs[name] = Input(msg_type, input_role, optional=optional, next_to=derived_topics.get(name))
-                roles[name] = role
-        for name, (source, _) in derived_topics.items():
-            if name not in inputs or source not in inputs or source == name:
-                raise ValueError(f"Evaluation '{self.name}' derives the topic of '{name}' from that of '{source}'")
-        return self._validated(inputs)
-
     def _validated(self, inputs: Dict[str, Input]) -> Dict[str, Input]:
         """Check that the inputs require a synchronized topic and are only published next to topics that are read."""
         if all(declared.optional or not declared.synchronized for declared in inputs.values()):
@@ -469,72 +416,6 @@ class Evaluation(ABC):
                 raise ValueError(f"Evaluation '{self.name}' derives the topic of '{name}' from that of '{declared.next_to[0]}'")
         return inputs
 
-    def required_inputs(self) -> Dict[str, Any]:
-        """Define the evaluated topics of an evaluation without metric building blocks.
-
-        These are the outputs of the system under test, e.g. the predictions
-        of a perception algorithm, and, for an evaluation that needs no
-        reference, the topics of the scenario it runs in, e.g. the ego state
-        and the surrounding objects a closed-loop planner is evaluated on.
-
-        Returns
-        -------
-        A dictionary mapping input names to their ROS message types, empty by
-        default.  The names are the keyword arguments of
-        :meth:`compute_sample_metrics` and the node-relative topics the node
-        subscribes to.
-        """
-        return {}
-
-    def required_ground_truth(self) -> Dict[str, Any]:
-        """Define the ground-truth topics the inputs of an evaluation without metric building blocks are compared with.
-
-        Ground truth is a reference the output of the system under test is
-        measured against, e.g. the labels of a dataset.  An evaluation that
-        computes its metrics from the inputs alone needs none.
-
-        Returns
-        -------
-        A dictionary mapping ground-truth names to their ROS message types,
-        empty by default.  The names are used like those of
-        :meth:`required_inputs`.
-        """
-        return {}
-
-    def optional_ground_truth(self) -> Dict[str, Any]:
-        """Define the ground-truth topics of an evaluation without metric building blocks that are read while published.
-
-        Optional ground truth is a reference that not every source of ground
-        truth provides, e.g. meta information published next to the labels
-        of a dataset that ``perception_msgs`` cannot express.  A sample is
-        evaluated once the messages of all required topics have been received,
-        waiting for the message of an optional topic only while that topic has
-        a publisher.  Otherwise, its message is passed to
-        :meth:`compute_sample_metrics` as ``None``.
-
-        Returns
-        -------
-        A dictionary mapping ground-truth names to their ROS message types,
-        empty by default. The names are used like those of
-        :meth:`required_inputs`.
-        """
-        return {}
-
-    def derived_topics(self) -> Dict[str, Tuple[str, str]]:
-        """Define the topics of an evaluation without metric building blocks that are published next to another one.
-
-        A topic that is published next to another one, e.g. the meta
-        information of an object list on ``<object list topic>/meta_info``,
-        follows that topic instead of having to be configured on its own.
-
-        Returns
-        -------
-        A dictionary mapping the name of such an input to the name of the
-        input it is published next to and the suffix appended to that
-        input's topic, empty by default.
-        """
-        return {}
-
     # ------------------------------------------------------------------
     # Metric computation
     # ------------------------------------------------------------------
@@ -543,9 +424,6 @@ class Evaluation(ABC):
         self, sample_id: Optional[str] = None, stamp: Optional[float] = None, **messages: Any
     ) -> Dict[str, Any]:
         """Compute the records of the computed metrics for a single sample.
-
-        An evaluation without metric building blocks overrides this method,
-        naming its parameters like its topics; it is called without ``stamp``.
 
         Parameters
         ----------
@@ -571,8 +449,7 @@ class Evaluation(ABC):
         """Aggregate per-sample metrics over the given samples.
 
         Each computed metric is aggregated after the metrics it requires, of
-        which only the selected ones are reported. An evaluation without metric
-        building blocks overrides this method.
+        which only the selected ones are reported.
 
         Parameters
         ----------
@@ -697,13 +574,9 @@ class Evaluation(ABC):
         The stored entry of the sample, as ``{"sample_id", "scene_id",
         "stamp", "metrics"}``.
         """
-        if self.available_metrics():
-            metrics = self.compute_sample_metrics(sample_id=sample_id, stamp=stamp, **messages)
-        else:
-            metrics = self.compute_sample_metrics(sample_id=sample_id, **messages)
+        metrics = self.compute_sample_metrics(sample_id=sample_id, stamp=stamp, **messages)
         entry: Dict[str, Any] = {"sample_id": sample_id, "scene_id": scene_id, "stamp": stamp, "metrics": metrics}
-        if self.available_metrics() and self._last_sample is not None:
-            entry["position"] = self.sample_position(self._last_sample)
+        entry["position"] = self.sample_position(self._last_sample)
         self._sample_results.append(entry)
         return entry
 

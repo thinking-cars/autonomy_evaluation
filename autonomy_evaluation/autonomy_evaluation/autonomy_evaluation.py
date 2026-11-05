@@ -1096,10 +1096,10 @@ class AutonomyEvaluation(Node):
     def evaluate_sample(self, stamp: Stamp, messages: dict[str, Any]):
         """Evaluates a single sample once the messages of all its inputs have been received
 
-        The messages are passed to the evaluation by the names of their inputs, which match the
-        parameters of its ``compute_sample_metrics``, together with the latest messages of the inputs
-        that are not matched by their stamps, e.g. a route, and the current values of the static
-        inputs, e.g. the map. The message of an optional input whose topic is not published is None.
+        The messages are passed to the evaluation by the names of their inputs, together with the
+        latest messages of the inputs that are not matched by their stamps, e.g. a route, and the
+        current values of the static inputs, e.g. the map. The message of an optional input whose
+        topic is not published is None.
 
         Samples are identified by the stamp of their message of the first input, which is the
         stamp the dataset recorded them with, and are attributed to the scene the dataset

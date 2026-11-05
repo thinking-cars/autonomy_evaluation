@@ -454,8 +454,6 @@ class MyPlannerEvaluation(Evaluation):
         return [ClosestObject()]
 ```
 
-An evaluation without metric building blocks, e.g. one implemented before they existed, may still declare its topics with `required_inputs()` (evaluated), `required_ground_truth()` (reference), `optional_ground_truth()` and `derived_topics()`, and compute its metrics itself by overriding `compute_sample_metrics()`, whose parameters are named after its topics, and `compute_aggregated_metrics()`.
-
 ### Configuration
 
 Each evaluation is configured by nested entries with default values, which hold
