@@ -630,7 +630,7 @@ class AutonomyEvaluation(Node):
 
         Every entry of the configuration of the evaluation is a read-only parameter named
         '<evaluation>.<entry>', e.g. 'object_detection_3d.ap.matching_thresholds' or
-        'closed_loop.metrics', whose default is the default of the entry. Parameters are typed
+        'driving_behavior.metrics', whose default is the default of the entry. Parameters are typed
         dynamically, so that a parameter file may give an integer for a floating-point entry; the
         evaluation checks the type of each entry against its default instead.
 

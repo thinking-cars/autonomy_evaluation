@@ -107,10 +107,10 @@ class TestRvizConfig:
 
     def test_evaluation_with_a_configuration_of_its_name(self, tmp_path):
         """An evaluation whose visualization differs from the default has an RViz configuration of its name."""
-        for name in ("conf.rviz", "closed_loop.rviz"):
+        for name in ("conf.rviz", "driving_behavior.rviz"):
             (tmp_path / name).write_text("")
 
-        assert _launch_module().rviz_config("closed_loop", str(tmp_path)) == str(tmp_path / "closed_loop.rviz")
+        assert _launch_module().rviz_config("driving_behavior", str(tmp_path)) == str(tmp_path / "driving_behavior.rviz")
 
     def test_default_configuration(self, tmp_path):
         """Any other evaluation, e.g. one of another package, is shown with the default configuration."""
@@ -119,8 +119,8 @@ class TestRvizConfig:
         assert _launch_module().rviz_config("my_package.evaluations:MyEvaluation", str(tmp_path)) == str(tmp_path / "conf.rviz")
 
     def test_package_holds_a_configuration_per_visualizing_evaluation(self):
-        """The closed-loop evaluation shows its outputs in a configuration of its own."""
+        """The driving behavior evaluation shows its outputs in a configuration of its own."""
         config_directory = Path(__file__).resolve().parents[1] / "config"
 
-        assert (config_directory / "closed_loop.rviz").is_file()
+        assert (config_directory / "driving_behavior.rviz").is_file()
         assert (config_directory / "conf.rviz").is_file()

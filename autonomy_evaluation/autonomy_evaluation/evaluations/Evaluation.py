@@ -70,6 +70,11 @@ _METRICS_KEY = "metrics"
 #: Separator of the keys of nested configuration entries in their flattened names, e.g. "ap.matching_thresholds".
 CONFIG_SEPARATOR = "."
 
+#: Areas the evaluations of this package belong to (see :attr:`Evaluation.AREA`), the top of the three levels area,
+#: evaluation and metric: the perception and the planning of the automated driving stack, and the driving behavior
+#: of the ego vehicle it drives.
+AREAS = ("perception", "planning", "driving_behavior")
+
 
 class Evaluation(ABC):
     """Base class of the evaluations of automated driving tasks.
@@ -102,6 +107,10 @@ class Evaluation(ABC):
 
     #: Mapping of version strings to their release notes.
     RELEASE_NOTES: Dict[str, str] = {}
+
+    #: Area the evaluation belongs to, one of :data:`AREAS` for the evaluations of this package, e.g.
+    #: ``perception`` for an object detection; empty for an evaluation that does not tell.
+    AREA: str = ""
 
     #: Qualified name of the metric whose aggregated value the evaluation reports as its own under ``_value_``, e.g.
     #: the detection score of a detection; ``None`` for an evaluation without a single overall value.
@@ -788,6 +797,7 @@ class Evaluation(ABC):
         scenes = self.sample_results_by_scene(evaluated)
         results = {
             "evaluation": self.name,
+            "area": self.AREA or None,
             "version": self.version,
             "description": self.description,
             "complete": complete,

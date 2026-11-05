@@ -335,7 +335,7 @@ class Metric(ABC):
 
 
 class MetricGroup:
-    """Named group of related metrics of an evaluation, e.g. the criticality metrics of a closed-loop evaluation.
+    """Named group of related metrics of an evaluation, e.g. the criticality metrics of the driving behavior.
 
     The metrics of a group are selected all at once by the name of the group or
     one by one as ``<group>.<metric>``, configured under the name of the group,

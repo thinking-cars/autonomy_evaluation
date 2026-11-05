@@ -14,7 +14,7 @@
 
 > This repository is part of the **Autonomy.Benchmarks** suite of the **Autonomy.Hub Ecosystem**
 
-Within the Autonomy.Benchmarks suite, **Autonomy.Evaluation** generates the metrics-based evidence for benchmarking automated driving deployments. It evaluates arbitrary ROS systems under test, either from their own topics alone, e.g. a closed-loop planner by its time to collision, or against ground truth, e.g. a perception algorithm against the labels of a dataset replayed by [Autonomy.Datasets](https://github.com/thinking-cars/autonomy_datasets), and reports the resulting metrics per scene and over all evaluated samples:
+Within the Autonomy.Benchmarks suite, **Autonomy.Evaluation** generates the metrics-based evidence for benchmarking automated driving deployments. It evaluates arbitrary ROS systems under test, either from their own topics alone, e.g. an automated driving stack in a closed-loop simulation by its time to collision, or against ground truth, e.g. a perception algorithm against the labels of a dataset replayed by [Autonomy.Datasets](https://github.com/thinking-cars/autonomy_datasets), and reports the resulting metrics per scene and over all evaluated samples:
 
 - 🔄 **Unified ROS 2 Interface**: Evaluate any ROS system under test, on datasets, in simulation or live, using the benefits of the ROS 2 ecosystem
 - 🧩 **Pluggable Evaluations**: Select an evaluation by name, or bring your own from another package, reading any topics as inputs and, where needed, ground truth
@@ -25,17 +25,17 @@ Within the Autonomy.Benchmarks suite, **Autonomy.Evaluation** generates the metr
 
 ## Supported Evaluations
 
-This repository supports evaluations of various automated driving tasks.
+This repository supports evaluations of various automated driving tasks, organized in three levels: an area of automated driving, i.e. perception, planning or driving behavior, its evaluations, and their metrics, e.g. `perception` → `object_detection_3d` → `ap`, or `driving_behavior` → `criticality` → `ttc`.
 
 Detailed metric definitions and computation notes are documented in [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md).
 
 > [**Contributions**](docs/IMPLEMENTATION.md#adding-more-evaluations) adding more evaluations are welcome
 
-| Evaluation | Datasets | Task | Preview |
-| ---------- | -------- | ---- | ------- |
-| [**3D Object Detection**](docs/IMPLEMENTATION.md#3d-object-detection) | All [Autonomy.Datasets](https://github.com/thinking-cars/autonomy_datasets) with 3D object labels | 3D bounding box detection on the classes of `perception_msgs/ObjectClassification` | ![Rviz Screenshot 3D Object Detection evaluation](./docs/assets/3d-object-detection.png)
-| [**Closed-Loop**](docs/IMPLEMENTATION.md#closed-loop) | Closed-loop simulations publishing `perception_msgs/EgoData` and `perception_msgs/ObjectList`, optionally with a Lanelet2 map, recorded and replayed by [Autonomy.Datasets](https://github.com/thinking-cars/autonomy_datasets) or live | Driving behavior of the ego vehicle a system under test drives: criticality (collisions, TTC, THW, PET), rule compliance (drivable area, driving direction, speed limit), progress (distance driven, standstill, completion of the planned route) and comfort (acceleration, jerk, yaw rate) | |
-| [**Trajectory Deviation**](docs/IMPLEMENTATION.md#trajectory-deviation) | Systems publishing `perception_msgs/EgoData` with planned trajectories or `trajectory_planning_msgs/Trajectory`, live or replayed | Deviation of an evaluated trajectory, planned or driven, from a reference trajectory: controller against plan, planner against ground truth, or two planners against each other; and consistency of consecutive plans | |
+| Area | Evaluation | Datasets | Task | Preview |
+| ---- | ---------- | -------- | ---- | ------- |
+| [**Perception**](docs/IMPLEMENTATION.md#perception) | [**3D Object Detection**](docs/IMPLEMENTATION.md#3d-object-detection) | All [Autonomy.Datasets](https://github.com/thinking-cars/autonomy_datasets) with 3D object labels | 3D bounding box detection on the classes of `perception_msgs/ObjectClassification` | ![Rviz Screenshot 3D Object Detection evaluation](./docs/assets/3d-object-detection.png)
+| [**Planning**](docs/IMPLEMENTATION.md#planning) | [**Trajectory Deviation**](docs/IMPLEMENTATION.md#trajectory-deviation) | Systems publishing `perception_msgs/EgoData` with planned trajectories or `trajectory_planning_msgs/Trajectory`, live or replayed | Deviation of an evaluated trajectory, planned or driven, from a reference trajectory: controller against plan, planner against ground truth, or two planners against each other; and consistency of consecutive plans | |
+| [**Driving Behavior**](docs/IMPLEMENTATION.md#driving-behavior) | [**Criticality**](docs/IMPLEMENTATION.md#criticality), [**Rule Compliance**](docs/IMPLEMENTATION.md#rule-compliance), [**Progress**](docs/IMPLEMENTATION.md#progress), [**Comfort**](docs/IMPLEMENTATION.md#comfort) | Closed-loop simulations publishing `perception_msgs/EgoData` and `perception_msgs/ObjectList`, optionally with a Lanelet2 map, recorded and replayed by [Autonomy.Datasets](https://github.com/thinking-cars/autonomy_datasets) or live | Driving behavior of the ego vehicle a system under test drives: criticality (collisions, TTC, THW, PET), rule compliance (drivable area, driving direction, speed limit), progress (distance driven, standstill, completion of the planned route) and comfort (acceleration, jerk, yaw rate) | |
 
 <p align="center">
   <strong>🚀 <a href="#-quick-start">Quick Start</a></strong> • <strong>💻 <a href="#-development">Development</a></strong> • <strong>📝 <a href="#-documentation">Documentation</a></strong>

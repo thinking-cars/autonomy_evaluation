@@ -16,21 +16,25 @@ from typing import Dict, Tuple
 
 from autonomy_evaluation.evaluations.Evaluation import Evaluation
 
-# Evaluations of this package by the name they are selected with, as (module, class). A module is
-# only imported once its evaluation is selected, so that running one evaluation does not require
-# the dependencies of all others.
+# Evaluations of this package by the name they are selected with, as (module, class), ordered by their area (see
+# Evaluation.AREA); driving_behavior runs all evaluations of its area, i.e. criticality, rule compliance, progress
+# and comfort, as groups of its metrics. A module is only imported once its evaluation is selected, so that
+# running one evaluation does not require the dependencies of all others.
 EVALUATIONS: Dict[str, Tuple[str, str]] = {
+    # perception
     "object_detection_3d": (
-        "autonomy_evaluation.evaluations.object_detection.ObjectDetection3D",
+        "autonomy_evaluation.evaluations.perception.object_detection.ObjectDetection3D",
         "ObjectDetection3D",
     ),
-    "closed_loop": (
-        "autonomy_evaluation.evaluations.closed_loop.ClosedLoop",
-        "ClosedLoop",
-    ),
+    # planning
     "trajectory_deviation": (
-        "autonomy_evaluation.evaluations.trajectory_deviation.TrajectoryDeviation",
+        "autonomy_evaluation.evaluations.planning.trajectory_deviation.TrajectoryDeviation",
         "TrajectoryDeviation",
+    ),
+    # driving behavior
+    "driving_behavior": (
+        "autonomy_evaluation.evaluations.driving_behavior.DrivingBehavior",
+        "DrivingBehavior",
     ),
 }
 

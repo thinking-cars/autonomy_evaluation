@@ -212,6 +212,8 @@ class TestFinalize:
         assert results["num_samples"] == 3
         assert results["num_scenes"] == 2
         assert results["metrics"] == {"num_predictions": 7, "num_labels": 9}
+        # an evaluation that does not tell its area has none
+        assert results["area"] is None
         assert results["scenes"]["scene_a"] == {
             "num_samples": 2,
             "sample_ids": ["0", "1"],

@@ -11,17 +11,17 @@ an automated driving deployment is benchmarked on.
 
 ### `autonomy_evaluation`
 
-The node runs the evaluation selected by `evaluation`, either one of this package by its name or one implemented in another package as `<module>:<class>` (see [Adding more Evaluations](../docs/IMPLEMENTATION.md#adding-more-evaluations)). An evaluation is composed of metrics, of which its configuration selects those it computes. Each metric declares the topics it reads, each in a role: _evaluated_, i.e. the output or behavior of the system under test, _reference_, i.e. the ground truth the evaluated topics are compared with, or _context_, i.e. what a metric needs without evaluating or comparing it, e.g. the road users the ego vehicle interacts with. The node subscribes to the topics of the computed metrics, each on its node-relative name, which the launch file remaps onto the topic given by the launch argument of the same name, e.g. `prediction:=/object_list/prediction`. A topic without such an argument is subscribed in the private namespace of the node. The node logs each topic it reads with its role. A topic a metric declares as optional, e.g. meta information that not every dataset publishes, is only waited for while it has a publisher; otherwise, the samples are evaluated without it. A topic a metric reads by its latest message, e.g. a route planned independently of the samples, is not matched by its stamp: every sample is passed its latest message.
+The node runs the evaluation selected by `evaluation`, either one of this package by its name, each belonging to an area of automated driving (`area` of the results): `object_detection_3d` of the perception, `trajectory_deviation` of the planning, or `driving_behavior`, which runs the evaluations of the driving behavior, i.e. `criticality`, `rule_compliance`, `progress` and `comfort`, together; or one implemented in another package as `<module>:<class>` (see [Adding more Evaluations](../docs/IMPLEMENTATION.md#adding-more-evaluations)). An evaluation is composed of metrics, of which its configuration selects those it computes. Each metric declares the topics it reads, each in a role: _evaluated_, i.e. the output or behavior of the system under test, _reference_, i.e. the ground truth the evaluated topics are compared with, or _context_, i.e. what a metric needs without evaluating or comparing it, e.g. the road users the ego vehicle interacts with. The node subscribes to the topics of the computed metrics, each on its node-relative name, which the launch file remaps onto the topic given by the launch argument of the same name, e.g. `prediction:=/object_list/prediction`. A topic without such an argument is subscribed in the private namespace of the node. The node logs each topic it reads with its role. A topic a metric declares as optional, e.g. meta information that not every dataset publishes, is only waited for while it has a publisher; otherwise, the samples are evaluated without it. A topic a metric reads by its latest message, e.g. a route planned independently of the samples, is not matched by its stamp: every sample is passed its latest message.
 
-| Evaluation | Evaluated | Reference | Context |
-| --- | --- | --- | --- |
-| `object_detection_3d` | `prediction` (`perception_msgs/ObjectList`) | `label` (`perception_msgs/ObjectList`); optionally `label_meta_info` (`autonomy_datasets_msgs/ObjectListMetaInfo`, subscribed next to `label` on `<label topic>/meta_info`) | - |
-| `closed_loop` | `ego_data` (`perception_msgs/EgoData`) | - | `objects` (`perception_msgs/ObjectList`), read by the `criticality` metrics only; optionally the latest `route` (`route_planning_msgs/Route`), read by `progress.route`; optionally the Lanelet2 `map` of the current scene from the parameters of the `map_server`, needed by the `rule_compliance` metrics |
-| `trajectory_deviation` | `evaluated` (`perception_msgs/EgoData`, its planned or driven trajectory, or `trajectory_planning_msgs/Trajectory`) | `reference` (`perception_msgs/EgoData`, its planned or driven trajectory, or `trajectory_planning_msgs/Trajectory`); both may be the same topic, e.g. to compare the driven with the planned trajectory | - |
+| Area | Evaluation | Evaluated | Reference | Context |
+| --- | --- | --- | --- | --- |
+| perception | `object_detection_3d` | `prediction` (`perception_msgs/ObjectList`) | `label` (`perception_msgs/ObjectList`); optionally `label_meta_info` (`autonomy_datasets_msgs/ObjectListMetaInfo`, subscribed next to `label` on `<label topic>/meta_info`) | - |
+| planning | `trajectory_deviation` | `evaluated` (`perception_msgs/EgoData`, its planned or driven trajectory, or `trajectory_planning_msgs/Trajectory`) | `reference` (`perception_msgs/EgoData`, its planned or driven trajectory, or `trajectory_planning_msgs/Trajectory`); both may be the same topic, e.g. to compare the driven with the planned trajectory | - |
+| driving_behavior | `driving_behavior`, i.e. `criticality`, `rule_compliance`, `progress` and `comfort` | `ego_data` (`perception_msgs/EgoData`) | - | `objects` (`perception_msgs/ObjectList`), read by the `criticality` metrics only; optionally the latest `route` (`route_planning_msgs/Route`), read by `progress.route`; optionally the Lanelet2 `map` of the current scene from the parameters of the `map_server`, needed by the `rule_compliance` metrics |
 
 A metric may also use the Lanelet2 map of the current scene, e.g. to find the lane the ego vehicle drives in. The node reads the map from the parameters `map_contents`, `origin_lat`, `origin_lon` and `map_frame_id` of the node set as `map_server`, as [lanelet2_map_server](https://github.com/openads-project/lanelet2_map_server) and [autonomy_datasets](https://github.com/thinking-cars/autonomy_datasets) (`/datasets`) provide them, and loads it anew whenever they change, e.g. with each scene of a dataset.
 
-Each evaluation is configured by parameters named `<evaluation>.<entry>`, e.g. `object_detection_3d.metrics` selecting the metrics it computes, which are usually set in a parameter file passed via the `config` launch argument. Nested entries are nested in the parameter file. Every entry that is not set keeps its default; the entries of each evaluation are documented in [IMPLEMENTATION.md](../docs/IMPLEMENTATION.md), their general structure in [Configuration](../docs/IMPLEMENTATION.md#configuration). Optional limits on the metrics, e.g. `closed_loop.limits: ["criticality.collision.at_fault == 0"]`, judge the results as passed or failed (see [Limits](../docs/IMPLEMENTATION.md#limits)); without limits, the results hold no verdict.
+Each evaluation is configured by parameters named `<evaluation>.<entry>`, e.g. `object_detection_3d.metrics` selecting the metrics it computes, which are usually set in a parameter file passed via the `config` launch argument. Nested entries are nested in the parameter file. Every entry that is not set keeps its default; the entries of each evaluation are documented in [IMPLEMENTATION.md](../docs/IMPLEMENTATION.md), their general structure in [Configuration](../docs/IMPLEMENTATION.md#configuration). Optional limits on the metrics, e.g. `driving_behavior.limits: ["criticality.collision.at_fault == 0"]`, judge the results as passed or failed (see [Limits](../docs/IMPLEMENTATION.md#limits)); without limits, the results hold no verdict.
 
 ```yaml
 /**:
@@ -57,15 +57,15 @@ ros2 launch autonomy_evaluation autonomy_evaluation.launch.py \
   visualize:=true \
   sample_source:=external
 
-# evaluate a running closed-loop simulation, which calls '~/next_scene' between its scenarios and '~/finish' after the last one
+# evaluate the driving behavior in a running closed-loop simulation, which calls '~/next_scene' between its scenarios and '~/finish' after the last one
 ros2 launch autonomy_evaluation autonomy_evaluation.launch.py \
-  evaluation:=closed_loop \
+  evaluation:=driving_behavior \
   ego_data:=/simulation/ego_data \
   objects:=/simulation/objects \
   map_server:=/lanelet2_map_server \
   sample_source:=external \
   sync_tolerance:=0.05 \
-  results_path:=/results/closed_loop.json
+  results_path:=/results/driving_behavior.json
 
 # run an evaluation of another package
 ros2 launch autonomy_evaluation autonomy_evaluation.launch.py \
@@ -127,7 +127,7 @@ flowchart LR
 | `namespace` | `""` | node namespace |
 | `log_level` | `"info"` | ros logging level |
 | `use_sim_time` | `"true"` | use sim time |
-| `visualize` | `"false"` | publish the per-sample visualization of the evaluation and open RViz on it, with `config/<evaluation>.rviz` if the package has one, e.g. for `closed_loop`, and `config/conf.rviz` otherwise |
+| `visualize` | `"false"` | publish the per-sample visualization of the evaluation and open RViz on it, with `config/<evaluation>.rviz` if the package has one, e.g. for `driving_behavior`, and `config/conf.rviz` otherwise |
 | `sample_source` | `"dataset"` | 'dataset' requests the samples to evaluate from the dataset one after another; 'external' evaluates the samples published by others, e.g. by a simulation or the playback panel in RViz |
 | `shutdown_completes` | `"false"` | with sample source 'external', mark the results written when the node is stopped as complete, e.g. when an orchestration stops the evaluation together with the simulation at the end of each scenario |
 | `sync_tolerance` | `"0.0"` | seconds by which the stamps of the messages of a sample may differ (0 matches exact stamps only) |

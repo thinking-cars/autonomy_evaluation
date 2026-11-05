@@ -3,7 +3,7 @@
 
 """Utility functions shared by the evaluations."""
 
-from autonomy_evaluation.utils.ClosedLoopUtils import ClosedLoopUtils
 from autonomy_evaluation.utils.ObjectDetectionUtils import ObjectDetectionUtils
+from autonomy_evaluation.utils.PlanarUtils import PlanarUtils
 
-__all__ = ["ClosedLoopUtils", "ObjectDetectionUtils"]
+__all__ = ["ObjectDetectionUtils", "PlanarUtils"]

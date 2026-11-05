@@ -37,7 +37,7 @@ import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from autonomy_evaluation.utils.ClosedLoopUtils import ClosedLoopUtils
+from autonomy_evaluation.utils.PlanarUtils import PlanarUtils
 
 # Maximum number of paths ahead that are followed through branching lanes
 _MAX_PATHS = 32
@@ -230,7 +230,7 @@ class Lanelet2Map:
             centerline, the lateral offset from it, positive to the left, and
             the heading of the centerline there.
         """
-        return ClosedLoopUtils.polyline_coordinates(self._centerline(lanelet), x, y)
+        return PlanarUtils.polyline_coordinates(self._centerline(lanelet), x, y)
 
     def length(self, lanelet: Any) -> float:
         """Return the length of the centerline of a lanelet."""

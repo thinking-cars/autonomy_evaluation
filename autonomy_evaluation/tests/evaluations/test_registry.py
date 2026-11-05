@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import pytest
 from autonomy_evaluation.evaluations import Evaluation, EVALUATIONS, load_evaluation
-from autonomy_evaluation.evaluations.object_detection.ObjectDetection3D import ObjectDetection3D
+from autonomy_evaluation.evaluations.Evaluation import AREAS
+from autonomy_evaluation.evaluations.perception.object_detection.ObjectDetection3D import ObjectDetection3D
 
 
 class TestLoadEvaluation:
@@ -22,6 +23,14 @@ class TestLoadEvaluation:
     def test_loads_every_registered_evaluation(self, name):
         """Every evaluation of this package can be selected by its registered name."""
         assert isinstance(load_evaluation(name), Evaluation)
+
+    @pytest.mark.parametrize("name", sorted(EVALUATIONS))
+    def test_every_registered_evaluation_has_an_area(self, name):
+        """Every evaluation of this package tells its area, and lies in the package of that area."""
+        evaluation = load_evaluation(name)
+
+        assert evaluation.AREA in AREAS
+        assert type(evaluation).__module__.startswith(f"autonomy_evaluation.evaluations.{evaluation.AREA}.")
 
     def test_loads_a_registered_evaluation_by_its_name(self):
         """The registered name selects the evaluation it is registered for."""
