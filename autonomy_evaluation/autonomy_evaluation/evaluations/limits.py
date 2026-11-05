@@ -6,9 +6,9 @@
 Metrics only measure, e.g. the smallest time to collision of the ego vehicle.
 Whether a measured value is acceptable depends on the application, so limits
 are configured for an evaluation, if at all, in its ``limits`` entry, one limit
-per string ``"<metric> <operator> <bound>"``, e.g.::
+per string ``"<metric> <operator> <bound>"``, e.g. for the criticality::
 
-    limits: ["criticality.ttc >= 1.5", "criticality.collision.at_fault == 0", "comfort.jerk.longitudinal.max_abs < 5"]
+    limits: ["ttc >= 1.5", "collision.at_fault == 0"]
 
 ``<metric>`` is the path of a value in the aggregated metrics, its keys joined
 by dots; a path to a metric with sub-metrics means its ``_value_``. The
@@ -53,8 +53,8 @@ class Limit:
     """A limit on one value of the aggregated metrics.
 
     Attributes:
-        text: The limit as configured, e.g. ``"criticality.ttc >= 1.5"``.
-        metric: Path of the value, e.g. ``"criticality.ttc"``.
+        text: The limit as configured, e.g. ``"collision.at_fault == 0"``.
+        metric: Path of the value, e.g. ``"collision.at_fault"``.
         operator: Comparison of the value with the bound, one of :data:`OPERATORS`.
         bound: Bound the value is compared with.
     """

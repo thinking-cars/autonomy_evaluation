@@ -251,7 +251,7 @@ class Metric(ABC):
 
     def __init__(self) -> None:
         """Start with the default configuration, under the name of the metric."""
-        #: Qualified name of the metric within its evaluation, e.g. ``criticality.ttc`` for a metric of a group; set
+        #: Qualified name of the metric within its evaluation, e.g. ``<group>.<metric>`` for a metric of a group; set
         #: when the evaluation collects its metrics.
         self.name: str = self.NAME
         #: Configuration of the metric: :meth:`default_config` with the values configured for its evaluation.
@@ -335,7 +335,7 @@ class Metric(ABC):
 
 
 class MetricGroup:
-    """Named group of related metrics of an evaluation, e.g. the criticality metrics of the driving behavior.
+    """Named group of related metrics of an evaluation, e.g. the metrics of one aspect of a broad evaluation.
 
     The metrics of a group are selected all at once by the name of the group or
     one by one as ``<group>.<metric>``, configured under the name of the group,

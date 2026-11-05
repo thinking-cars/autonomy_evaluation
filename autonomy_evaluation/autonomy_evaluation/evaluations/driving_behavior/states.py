@@ -1,7 +1,7 @@
 # Copyright Thinking Cars GmbH
 # SPDX-License-Identifier: Apache-2.0
 
-"""States of the ego vehicle and the other road users, which all metrics of the driving behavior evaluation share.
+"""States of the ego vehicle and the other road users, which all metrics of the driving behavior evaluations share.
 
 The ego vehicle is read from the ``ego_data`` input (``perception_msgs/EgoData``),
 the other road users from the ``objects`` input (``perception_msgs/ObjectList``).
@@ -31,14 +31,15 @@ from __future__ import annotations
 import copy
 import math
 from dataclasses import dataclass
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import rclpy.logging
 import tf2_perception_msgs  # noqa: F401, registers the tf2 transforms of perception_msgs/ObjectList and EgoData
-from autonomy_evaluation.evaluations.Metric import CONTEXT, Input, Sample
+from autonomy_evaluation.evaluations.Metric import CONTEXT, EVALUATED, Input, Sample
 from autonomy_evaluation.utils.Lanelet2Map import Lanelet2Map
 from autonomy_evaluation.utils.PerceptionMsgsUtils import PerceptionMsgsUtils
+from perception_msgs.msg import EgoData
 from perception_msgs_utils.state_getters import (
     get_acc_lat,
     get_acc_lon,
@@ -215,6 +216,11 @@ def object_states(sample: Sample) -> ObjectStates:
         )
 
     return sample.memo("object_states", read)
+
+
+def ego_inputs() -> Dict[str, Input]:
+    """Declare the input of the metrics of the ego vehicle: its evaluated ``ego_data``."""
+    return {"ego_data": Input(EgoData, EVALUATED)}
 
 
 def map_input() -> Input:

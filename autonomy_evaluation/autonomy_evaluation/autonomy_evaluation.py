@@ -13,7 +13,7 @@ from typing import Any, Callable, Collection, Optional, Sequence, Union
 import rclpy
 import rclpy.exceptions
 from autonomy_datasets_msgs.srv import RequestSamples
-from autonomy_evaluation.evaluations import Evaluation, Input, load_evaluation, ROLES
+from autonomy_evaluation.evaluations import Evaluation, Input, load_evaluations, merged_inputs, ROLES
 from autonomy_evaluation.evaluations.Evaluation import CONFIG_SEPARATOR, flatten_config, unflatten_config
 from autonomy_evaluation.lanelet2_map_client import Lanelet2MapClient
 from autonomy_evaluation.utils.Lanelet2Map import Lanelet2Map
@@ -55,6 +55,10 @@ _FINISH_SHUTDOWN_DELAY_S = 0.5
 # Number of samples whose messages are kept while they wait for the messages of their remaining
 # evaluation inputs
 _SYNCHRONIZER_QUEUE_SIZE = 10
+
+# Placeholder of the 'results_path' parameter replaced by the name of each evaluation, so that the
+# evaluations of a node write their results to a file each
+RESULTS_PATH_PLACEHOLDER = "{evaluation}"
 
 # Values of the 'sample_source' parameter: the node requests the samples to evaluate from the
 # dataset, or evaluates whatever samples reach it, e.g. from a simulation or the RViz playback panel
@@ -222,8 +226,9 @@ class AutonomyEvaluation(Node):
         self.evaluation = self.declare_and_load_parameter(
             name="evaluation",
             param_type=rclpy.Parameter.Type.STRING,
-            description="name of an evaluation of this package, or '<module>:<class>' of an evaluation implemented in "
-            "another package",
+            description="evaluations to run on the same samples: the name of an evaluation of this package, of an area "
+            "running all its evaluations, e.g. 'driving_behavior', or '<module>:<class>' of an evaluation implemented in "
+            "another package; several as comma-separated list, e.g. 'criticality,comfort'",
             default="object_detection_3d",
             add_to_auto_reconfigurable_params=False,
             read_only=True,
@@ -314,7 +319,9 @@ class AutonomyEvaluation(Node):
         self.results_path = self.declare_and_load_parameter(
             name="results_path",
             param_type=rclpy.Parameter.Type.STRING,
-            description="path of the JSON file the evaluation results are written to; results are only logged if empty",
+            description=f"path of the JSON file the results of an evaluation are written to, in which "
+            f"'{RESULTS_PATH_PLACEHOLDER}' is replaced by the name of the evaluation, as required to run several; results "
+            "are only logged if empty",
             default="",
         )
 
@@ -431,11 +438,15 @@ class AutonomyEvaluation(Node):
 
         self.data_subscriptions: dict[str, Subscription] = {}
 
-        # load the selected evaluation, configure it, and determine the topics its computed metrics read
+        # load the selected evaluations, configure them, and determine the topics their computed metrics read; all
+        # evaluations are evaluated on the same samples, so they read an input of the same name from the same topic
         try:
-            evaluation_handler = load_evaluation(self.evaluation)
-            self.configure_evaluation(evaluation_handler)
-            declared_inputs = evaluation_handler.inputs()
+            evaluation_handlers = load_evaluations(self.evaluation)
+            for evaluation_handler in evaluation_handlers:
+                self.configure_evaluation(evaluation_handler)
+            declared_inputs = merged_inputs(evaluation_handlers)
+            visualization_outputs = self.visualization_outputs(evaluation_handlers) if self.visualize else {}
+            self.check_results_path(self.results_path, evaluation_handlers)
         except ValueError as exception:
             self.get_logger().fatal(f"{exception}, exiting")
             raise SystemExit(1)
@@ -448,7 +459,8 @@ class AutonomyEvaluation(Node):
         # is cleared when the simulation clock jumps back to a scene recorded earlier
         self.tf_buffer = Buffer(node=self)
         self.tf_listener = TransformListener(self.tf_buffer, self)
-        evaluation_handler.tf_buffer = self.tf_buffer
+        for evaluation_handler in evaluation_handlers:
+            evaluation_handler.tf_buffer = self.tf_buffer
 
         # create subscriptions for the topics of the evaluation, whose messages are matched into
         # the samples to evaluate by their stamp; a sample only waits for the message of an
@@ -478,17 +490,19 @@ class AutonomyEvaluation(Node):
                     depth=10,
                 ),
             )
-        evaluation_handler.input_topics = {
+        input_topics = {
             **{name: subscription.topic_name for name, subscription in self.data_subscriptions.items()},
             **self.static_input_sources,
         }
+        for evaluation_handler in evaluation_handlers:
+            evaluation_handler.input_topics = input_topics
         for role in ROLES:
             topics = ", ".join(
-                f"'{name}' from '{evaluation_handler.input_topics[name]}'"
+                f"'{name}' from '{input_topics[name]}'"
                 + (" (latest message)" if declared.latest else "")
                 + (" (optional)" if declared.optional else "")
                 for name, declared in declared_inputs.items()
-                if declared.role == role and name in evaluation_handler.input_topics
+                if declared.role == role and name in input_topics
             )
             if topics:
                 self.get_logger().info(f"Reading {role} {topics}")
@@ -506,10 +520,10 @@ class AutonomyEvaluation(Node):
                     "received at exactly their stamp, set 'sync_tolerance' to match them within a tolerance"
                 )
 
-        # create publishers visualizing the evaluation's per-sample matching outcome
+        # create publishers visualizing the per-sample outcome of the evaluations, e.g. the matching of a detection
         self.visualization_publishers: dict[str, Publisher] = {}
         if self.visualize:
-            for msg_topic, msg_type in evaluation_handler.visualization_outputs().items():
+            for msg_topic, msg_type in visualization_outputs.items():
                 self.visualization_publishers[msg_topic] = self.create_publisher(
                     msg_type,
                     f"~/{msg_topic}",
@@ -522,7 +536,9 @@ class AutonomyEvaluation(Node):
                 )
             self.get_logger().info(f"Visualizing evaluation results on: {sorted(self.visualization_publishers)}")
 
-        self.evaluation_handler = evaluation_handler
+        self.evaluation_handlers = evaluation_handlers
+        # names of the inputs each evaluation reads, whose messages it is passed of every sample
+        self.evaluation_inputs = {evaluation.name: list(evaluation.inputs()) for evaluation in evaluation_handlers}
 
         self.published_sample_ids: list[int] = []
         # A sample may already be evaluated before the dataset node answers the request that
@@ -539,8 +555,10 @@ class AutonomyEvaluation(Node):
         self.dataset_available = False
         self.dataset_unavailable_since: Optional[float] = None
         self.evaluation_finished = False
+        # samples evaluated by any evaluation, and the samples each evaluation recorded or could not evaluate
         self.num_evaluated_samples = 0
-        self.num_skipped_samples = 0
+        self.num_recorded_samples = {evaluation.name: 0 for evaluation in evaluation_handlers}
+        self.num_skipped_samples = {evaluation.name: 0 for evaluation in evaluation_handlers}
 
         # Whoever publishes the samples may end the evaluation, e.g. a closed-loop simulation at the
         # end of its scenario, which is the only way to learn about the end of an external sample source
@@ -553,7 +571,8 @@ class AutonomyEvaluation(Node):
         # scenes were evaluated
         self.next_scene_service = self.create_service(Trigger, "~/next_scene", self.next_scene_callback)
         self.separates_scenes = False
-        self.samples_of_current_scene: list[dict[str, Any]] = []
+        # the entries the evaluations recorded of each sample of the current scene
+        self.samples_of_current_scene: list[list[dict[str, Any]]] = []
         self.num_separated_scenes = 0
 
         # With an external sample source, the samples are evaluated as they arrive. Whoever
@@ -625,12 +644,50 @@ class AutonomyEvaluation(Node):
         """
         return {name: self.map_client.map if self.map_client is not None else None for name in self.static_inputs}
 
+    @staticmethod
+    def check_results_path(results_path: str, evaluations: Sequence[Evaluation]):
+        """Checks that the results of each evaluation are written to a file of their own
+
+        Args:
+            results_path (str): value of the 'results_path' parameter
+            evaluations (Sequence[Evaluation]): evaluations of the node
+
+        Raises:
+            ValueError: if several evaluations would write their results to the same file
+        """
+        if results_path and len(evaluations) > 1 and RESULTS_PATH_PLACEHOLDER not in results_path:
+            raise ValueError(
+                f"Parameter 'results_path' has to contain '{RESULTS_PATH_PLACEHOLDER}' to write the results of the "
+                f"evaluations {[evaluation.name for evaluation in evaluations]} to a file each: '{results_path}'"
+            )
+
+    @staticmethod
+    def visualization_outputs(evaluations: Sequence[Evaluation]) -> dict[str, Any]:
+        """Collects the outputs the evaluations publish their visualization on
+
+        Args:
+            evaluations (Sequence[Evaluation]): evaluations of the node
+
+        Returns:
+            dict[str, Any]: ROS message type of each output by its node-relative topic
+
+        Raises:
+            ValueError: if two evaluations publish an output of the same name
+        """
+        outputs: dict[str, Any] = {}
+        for evaluation in evaluations:
+            for msg_topic, msg_type in evaluation.visualization_outputs().items():
+                if msg_topic in outputs:
+                    raise ValueError(f"Evaluations publish visualization output '{msg_topic}' twice, so they cannot run together")
+                outputs[msg_topic] = msg_type
+        return outputs
+
     def configure_evaluation(self, evaluation: Evaluation):
         """Configures the evaluation, e.g. which metrics it computes, by the ROS parameters named after it
 
         Every entry of the configuration of the evaluation is a read-only parameter named
         '<evaluation>.<entry>', e.g. 'object_detection_3d.ap.matching_thresholds' or
-        'driving_behavior.metrics', whose default is the default of the entry. Parameters are typed
+        'criticality.metrics', whose default is the default of the entry. Parameters are typed
         dynamically, so that a parameter file may give an integer for a floating-point entry; the
         evaluation checks the type of each entry against its default instead.
 
@@ -851,21 +908,21 @@ class AutonomyEvaluation(Node):
         """
         for scene_id in published_scene_ids:
             if self.samples_awaiting_scene:
-                self.samples_awaiting_scene.popleft()["scene_id"] = str(scene_id)
+                for entry in self.samples_awaiting_scene.popleft():
+                    entry["scene_id"] = str(scene_id)
             else:
                 self.scenes_awaiting_sample.append(str(scene_id))
 
     def finalize_evaluation(self, complete: bool = True):
-        """Aggregates the metrics of the evaluated samples per scene and over the whole evaluation
+        """Aggregates the metrics of the evaluated samples per scene and over the whole evaluation, for each evaluation
 
-        The results hold the metrics of every single sample, of the samples of each scene, and of
-        all evaluated samples, of which the metrics over all samples are logged. Calling this on an
-        evaluation that has already been finalized does nothing, so that an evaluation which ran to
-        its end is not finalized a second time when the node shuts down.
+        Each evaluation reports its results of its own (see 'report_results'). Calling this on
+        evaluations that have already been finalized does nothing, so that evaluations which ran to
+        their end are not finalized a second time when the node shuts down.
 
         Args:
             complete (bool, optional): whether all samples to evaluate have been processed; the
-                results of an evaluation that was interrupted before its last sample, e.g. with
+                results of evaluations that were interrupted before their last sample, e.g. with
                 Ctrl-C, are marked as incomplete via '"complete": false'
         """
         if self.evaluation_finished:
@@ -874,27 +931,42 @@ class AutonomyEvaluation(Node):
         if self.request_timer is not None:
             self.request_timer.cancel()
 
-        if not self.num_evaluated_samples:
-            self.get_logger().warn(f"Evaluation '{self.evaluation}' evaluated no sample, no metrics are aggregated")
-            return
-
         # the samples evaluated since the last scene ended form the last scene
         if self.separates_scenes:
             self.end_scene()
 
-        results = self.evaluation_handler.finalize(complete=complete)
+        for evaluation_handler in self.evaluation_handlers:
+            self.report_results(evaluation_handler, complete)
+
+    def report_results(self, evaluation: Evaluation, complete: bool):
+        """Aggregates the metrics an evaluation recorded, and writes or logs its results
+
+        The results hold the metrics of every single sample, of the samples of each scene, and of
+        all evaluated samples, of which the metrics over all samples are logged. They are written
+        to 'results_path', with the name of the evaluation in place of its placeholder.
+
+        Args:
+            evaluation (Evaluation): evaluation to report the results of
+            complete (bool): whether all samples to evaluate have been processed
+        """
+        name = evaluation.name
+        if not self.num_recorded_samples[name]:
+            self.get_logger().warn(f"Evaluation '{name}' evaluated no sample, no metrics are aggregated")
+            return
+
+        results = evaluation.finalize(complete=complete)
         # samples the evaluation could not evaluate, e.g. without the transform between their frames
-        results["num_skipped_samples"] = self.num_skipped_samples
+        num_skipped_samples = self.num_skipped_samples[name]
+        results["num_skipped_samples"] = num_skipped_samples
         aggregated_metrics = json.dumps(results["metrics"], indent=2, default=str)
         evaluated_samples = f"{results['num_samples']} evaluated sample(s) of {results['num_scenes']} scene(s)"
-        if self.num_skipped_samples:
-            evaluated_samples += f", skipping {self.num_skipped_samples} sample(s) that could not be evaluated"
+        if num_skipped_samples:
+            evaluated_samples += f", skipping {num_skipped_samples} sample(s) that could not be evaluated"
         if complete:
-            self.get_logger().info(f"Evaluation '{self.evaluation}' finished after {evaluated_samples}.")
+            self.get_logger().info(f"Evaluation '{name}' finished after {evaluated_samples}.")
         else:
             self.get_logger().warn(
-                f"Evaluation '{self.evaluation}' was interrupted after {evaluated_samples}, "
-                "its results are marked as incomplete."
+                f"Evaluation '{name}' was interrupted after {evaluated_samples}, its results are marked as incomplete."
             )
 
         # limits are optional, and only judged if configured
@@ -902,7 +974,7 @@ class AutonomyEvaluation(Node):
             verdict = results["limits"]
             outcome = {True: "passed", False: "failed", None: "left undecided"}[verdict["passed"]]
             summary = (
-                f"Evaluation '{self.evaluation}' {outcome} its limits: {verdict['num_passed']} of "
+                f"Evaluation '{name}' {outcome} its limits: {verdict['num_passed']} of "
                 f"{len(verdict['checks'])} limit(s) passed, {verdict['num_failed']} failed"
             )
             if verdict["passed"]:
@@ -912,13 +984,14 @@ class AutonomyEvaluation(Node):
 
         if self.results_path:
             reported_results = "evaluation results" if complete else "incomplete evaluation results"
+            results_path = self.results_path.replace(RESULTS_PATH_PLACEHOLDER, name)
             try:
-                results_path = self.evaluation_handler.save_results(self.results_path, results=results)
-                self.get_logger().info(f"Wrote {reported_results} to '{results_path}'")
+                results_path = evaluation.save_results(results_path, results=results)
+                self.get_logger().info(f"Wrote {reported_results} of '{name}' to '{results_path}'")
             except OSError as exception:
-                self.get_logger().error(f"Failed to write {reported_results} to '{self.results_path}': {exception}")
+                self.get_logger().error(f"Failed to write {reported_results} of '{name}' to '{results_path}': {exception}")
         else:
-            self.get_logger().info(f"Aggregated dataset metrics:\n{aggregated_metrics}")
+            self.get_logger().info(f"Aggregated metrics of evaluation '{name}':\n{aggregated_metrics}")
 
     def finish_callback(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
         """Finishes the evaluation on request, reports its results and shuts down the node
@@ -1003,29 +1076,37 @@ class AutonomyEvaluation(Node):
         self.get_logger().info(response.message)
         return response
 
-    def skip_sample(self, sample_id: str, reason: Exception):
-        """Leaves out a sample that the evaluation cannot evaluate, e.g. without the transform between its frames
+    def skip_sample(self, sample_id: str, evaluation: Evaluation, reason: Exception):
+        """Leaves a sample out of an evaluation that cannot evaluate it, e.g. without the transform between its frames
 
         A live system, e.g. a simulation that has just started, may publish samples before
         everything they need is available, which must not stop the evaluation of the following
-        samples. With the dataset as sample source, the scene of the skipped sample is dropped, so
-        that the scenes of the following samples stay matched with them, and the evaluation
-        continues with the next samples.
+        samples. The other evaluations still evaluate the sample.
 
         Args:
             sample_id (str): sample that is left out
+            evaluation (Evaluation): evaluation that leaves the sample out
             reason (Exception): why the evaluation cannot evaluate the sample
         """
-        self.num_skipped_samples += 1
+        self.num_skipped_samples[evaluation.name] += 1
         self.get_logger().warn(
-            f"Skipping sample '{sample_id}' ({self.num_skipped_samples} skipped so far): {reason}",
+            f"Evaluation '{evaluation.name}' skips sample '{sample_id}' ({self.num_skipped_samples[evaluation.name]} "
+            f"skipped so far): {reason}",
             throttle_duration_sec=_SKIP_LOG_INTERVAL_S,
         )
+
+    def drop_sample(self):
+        """Continues without a sample that no evaluation could evaluate
+
+        With the dataset as sample source, the scene of the dropped sample is dropped as well, so
+        that the scenes of the following samples stay matched with them, and the evaluation
+        continues with the next samples.
+        """
         if self.requests_samples:
             if self.scenes_awaiting_sample:
                 self.scenes_awaiting_sample.popleft()
             else:
-                self.samples_awaiting_scene.append({})
+                self.samples_awaiting_scene.append([])
             self.evaluation_deadline = time.monotonic() + self.evaluation_timeout
             self.advance_evaluation()
 
@@ -1039,8 +1120,9 @@ class AutonomyEvaluation(Node):
             return None
         self.num_separated_scenes += 1
         scene_id = f"scene_{self.num_separated_scenes}"
-        for entry in self.samples_of_current_scene:
-            entry["scene_id"] = scene_id
+        for entries in self.samples_of_current_scene:
+            for entry in entries:
+                entry["scene_id"] = scene_id
         self.samples_of_current_scene = []
         return scene_id
 
@@ -1094,12 +1176,13 @@ class AutonomyEvaluation(Node):
         self.latest_messages[name] = message
 
     def evaluate_sample(self, stamp: Stamp, messages: dict[str, Any]):
-        """Evaluates a single sample once the messages of all its inputs have been received
+        """Evaluates a single sample by all evaluations once the messages of all its inputs have been received
 
-        The messages are passed to the evaluation by the names of their inputs, together with the
-        latest messages of the inputs that are not matched by their stamps, e.g. a route, and the
-        current values of the static inputs, e.g. the map. The message of an optional input whose
-        topic is not published is None.
+        The messages are passed to each evaluation by the names of the inputs it reads, together
+        with the latest messages of the inputs that are not matched by their stamps, e.g. a route,
+        and the current values of the static inputs, e.g. the map. The message of an optional input
+        whose topic is not published is None. An evaluation that cannot evaluate the sample leaves
+        it out, while the others still evaluate it.
 
         Samples are identified by the stamp of their message of the first input, which is the
         stamp the dataset recorded them with, and are attributed to the scene the dataset
@@ -1113,10 +1196,23 @@ class AutonomyEvaluation(Node):
         self.get_logger().debug(f"Evaluating sample '{sample_id}'")
 
         messages = {**messages, **self.latest_messages, **self.static_messages()}
-        try:
-            result = self.evaluation_handler.record_sample(sample_id=sample_id, stamp=_to_nanoseconds(stamp) * 1e-9, **messages)
-        except ValueError as exception:
-            self.skip_sample(sample_id, exception)
+        # the evaluations that evaluated the sample, with the messages they were passed, and the entries they recorded
+        evaluated: list[tuple[Evaluation, dict[str, Any]]] = []
+        entries: list[dict[str, Any]] = []
+        for evaluation_handler in self.evaluation_handlers:
+            evaluation_messages = {name: messages[name] for name in self.evaluation_inputs[evaluation_handler.name]}
+            try:
+                entry = evaluation_handler.record_sample(
+                    sample_id=sample_id, stamp=_to_nanoseconds(stamp) * 1e-9, **evaluation_messages
+                )
+            except ValueError as exception:
+                self.skip_sample(sample_id, evaluation_handler, exception)
+                continue
+            self.num_recorded_samples[evaluation_handler.name] += 1
+            evaluated.append((evaluation_handler, evaluation_messages))
+            entries.append(entry)
+        if not entries:
+            self.drop_sample()
             return
         self.num_evaluated_samples += 1
         # attribute the sample to the scene the dataset published it from, which the dataset may
@@ -1125,22 +1221,27 @@ class AutonomyEvaluation(Node):
         # starts the next one, if at all
         if self.requests_samples:
             if self.scenes_awaiting_sample:
-                result["scene_id"] = self.scenes_awaiting_sample.popleft()
+                scene_id = self.scenes_awaiting_sample.popleft()
+                for entry in entries:
+                    entry["scene_id"] = scene_id
             else:
-                self.samples_awaiting_scene.append(result)
+                self.samples_awaiting_scene.append(entries)
         else:
-            self.samples_of_current_scene.append(result)
+            self.samples_of_current_scene.append(entries)
         # a system under test that needs longer for some samples must not run into the timeout,
         # which therefore restarts with every evaluated sample
         self.evaluation_deadline = time.monotonic() + self.evaluation_timeout
         if not self.results_path:
-            self.get_logger().debug(f"Sample '{sample_id}' result: {result}")
+            self.get_logger().debug(f"Sample '{sample_id}' results: {entries}")
 
-        # publish the sample's visualization for inspection in RViz
+        # publish the sample's visualization for inspection in RViz, of the evaluations that evaluated it
         if self.visualization_publishers:
-            visualization = self.evaluation_handler.visualize_sample(sample_id=sample_id, **messages)
+            visualization: dict[str, Any] = {}
+            for evaluation_handler, evaluation_messages in evaluated:
+                visualization.update(evaluation_handler.visualize_sample(sample_id=sample_id, **evaluation_messages))
             for msg_topic, publisher in self.visualization_publishers.items():
-                publisher.publish(visualization[msg_topic])
+                if msg_topic in visualization:
+                    publisher.publish(visualization[msg_topic])
 
         # request the next samples, or aggregate the dataset metrics if this was the last one; with
         # an external sample source, others publish the next samples instead

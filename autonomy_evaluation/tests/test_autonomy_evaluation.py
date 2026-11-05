@@ -276,10 +276,12 @@ class _FakeLogger:
 class _FakeEvaluationHandler:
     """Stand in for the evaluation whose results the node aggregates and writes."""
 
-    def __init__(self):
+    def __init__(self, name: str = "counting"):
         """Start without finalized or written results."""
+        self.name = name
         self.finalized_complete = None
         self.written_results = None
+        self.written_path = None
 
     def finalize(self, complete: bool = True) -> dict:
         """Report results that are marked the way the node asked for."""
@@ -289,14 +291,17 @@ class _FakeEvaluationHandler:
     def save_results(self, output_path: str, results: dict = None) -> str:
         """Keep the results instead of writing them to a file."""
         self.written_results = results
+        self.written_path = output_path
         return output_path
 
 
 class _RecordingEvaluationHandler:
     """Stand in for the evaluation that records the samples the node evaluates."""
 
-    def __init__(self):
-        """Start without recorded samples."""
+    def __init__(self, name: str = "evaluation", inputs: tuple = tuple(_TOPICS)):
+        """Start without recorded samples, reading the given inputs."""
+        self.name = name
+        self.inputs = list(inputs)
         self.recorded_samples: list = []
 
     def record_sample(self, sample_id: str, stamp: float = None, **messages) -> dict:
@@ -307,16 +312,19 @@ class _RecordingEvaluationHandler:
         return entry
 
 
-def _evaluating_node(requests_samples: bool) -> SimpleNamespace:
+def _evaluating_node(requests_samples: bool, handlers: list = None) -> SimpleNamespace:
     """Stub the node state that evaluating a sample reads, counting the attempts to continue the evaluation."""
+    handlers = handlers or [_RecordingEvaluationHandler()]
     node = SimpleNamespace(
         requests_samples=requests_samples,
-        evaluation_handler=_RecordingEvaluationHandler(),
+        evaluation_handlers=handlers,
+        evaluation_inputs={handler.name: handler.inputs for handler in handlers},
         num_evaluated_samples=0,
+        num_recorded_samples={handler.name: 0 for handler in handlers},
+        num_skipped_samples={handler.name: 0 for handler in handlers},
         scenes_awaiting_sample=deque(),
         samples_awaiting_scene=deque(),
         samples_of_current_scene=[],
-        num_skipped_samples=0,
         latest_messages={},
         evaluation_timeout=60.0,
         evaluation_deadline=None,
@@ -327,7 +335,14 @@ def _evaluating_node(requests_samples: bool) -> SimpleNamespace:
         get_logger=lambda logger=_FakeLogger(): logger,
     )
     node.advance_evaluation = lambda: setattr(node, "num_advances", node.num_advances + 1)
+    node.skip_sample = partial(AutonomyEvaluation.skip_sample, node)
+    node.drop_sample = partial(AutonomyEvaluation.drop_sample, node)
     return node
+
+
+def _failing(**_):
+    """Record no sample, like an evaluation without the transform between the frames of the sample."""
+    raise ValueError("no transform from 'odom' to 'map'")
 
 
 def _sample_messages(stamp: tuple[int, int]) -> dict:
@@ -345,28 +360,28 @@ class TestEvaluateSample:
 
         AutonomyEvaluation.evaluate_sample(node, _NEXT_SCENE[0], messages)
 
-        assert node.evaluation_handler.recorded_messages == messages
-        assert node.evaluation_handler.recorded_samples[0]["sample_id"] == "1531885320.049418000"
+        assert node.evaluation_handlers[0].recorded_messages == messages
+        assert node.evaluation_handlers[0].recorded_samples[0]["sample_id"] == "1531885320.049418000"
 
     def test_passes_the_static_inputs_with_every_sample(self):
         """Context that holds for many samples, e.g. the map of the current scene, joins the messages of each sample."""
-        node = _evaluating_node(requests_samples=True)
+        node = _evaluating_node(requests_samples=True, handlers=[_RecordingEvaluationHandler(inputs=(*_TOPICS, "map"))])
         node.static_messages = lambda: {"map": "map of the scene"}
 
         AutonomyEvaluation.evaluate_sample(node, _NEXT_SCENE[0], _sample_messages(_NEXT_SCENE[0]))
 
-        assert node.evaluation_handler.recorded_messages["map"] == "map of the scene"
+        assert node.evaluation_handlers[0].recorded_messages["map"] == "map of the scene"
 
     def test_passes_the_latest_message_of_inputs_not_matched_by_their_stamps(self):
         """A route planned independently of the samples joins every sample with its latest message."""
-        node = _evaluating_node(requests_samples=False)
+        node = _evaluating_node(requests_samples=False, handlers=[_RecordingEvaluationHandler(inputs=(*_TOPICS, "route"))])
         node.latest_messages = {"route": None}
 
         AutonomyEvaluation.receive_latest_message(node, "route", "first route")
         AutonomyEvaluation.receive_latest_message(node, "route", "replanned route")
         AutonomyEvaluation.evaluate_sample(node, _NEXT_SCENE[0], _sample_messages(_NEXT_SCENE[0]))
 
-        assert node.evaluation_handler.recorded_messages["route"] == "replanned route"
+        assert node.evaluation_handlers[0].recorded_messages["route"] == "replanned route"
 
     def test_passes_the_stamp_of_the_sample_in_seconds(self):
         """Metrics that depend on the time between samples, e.g. a jerk, read the stamp of each sample."""
@@ -374,7 +389,7 @@ class TestEvaluateSample:
 
         AutonomyEvaluation.evaluate_sample(node, _NEXT_SCENE[0], _sample_messages(_NEXT_SCENE[0]))
 
-        assert node.evaluation_handler.recorded_samples[0]["stamp"] == pytest.approx(1531885320.049418, abs=1e-6)
+        assert node.evaluation_handlers[0].recorded_samples[0]["stamp"] == pytest.approx(1531885320.049418, abs=1e-6)
 
     def test_evaluation_requests_the_next_samples_after_evaluating_one(self):
         """With the dataset as sample source, the evaluation continues with the next samples on its own."""
@@ -384,38 +399,30 @@ class TestEvaluateSample:
 
         assert node.num_advances == 1
         # the dataset reports the scene of the sample with the response to the request
-        assert list(node.samples_awaiting_scene) == node.evaluation_handler.recorded_samples
+        assert list(node.samples_awaiting_scene) == [node.evaluation_handlers[0].recorded_samples]
 
     def test_sample_that_cannot_be_evaluated_is_skipped(self):
         """A sample without the transform between its frames, e.g. right after a simulation started, is left out."""
         node = _evaluating_node(requests_samples=False)
-        node.skip_sample = partial(AutonomyEvaluation.skip_sample, node)
 
-        def fail(**_):
-            raise ValueError("no transform from 'odom' to 'map'")
-
-        node.evaluation_handler.record_sample = fail
+        node.evaluation_handlers[0].record_sample = _failing
         AutonomyEvaluation.evaluate_sample(node, _NEXT_SCENE[0], _sample_messages(_NEXT_SCENE[0]))
 
-        assert (node.num_evaluated_samples, node.num_skipped_samples) == (0, 1)
+        assert (node.num_evaluated_samples, node.num_skipped_samples) == (0, {"evaluation": 1})
         assert "no transform from 'odom' to 'map'" in node.get_logger().messages[-1]
 
     def test_skipped_sample_of_the_dataset_drops_its_scene(self):
         """The scene of a skipped sample must not be attributed to the next sample."""
         node = _evaluating_node(requests_samples=True)
-        node.skip_sample = partial(AutonomyEvaluation.skip_sample, node)
         node.scenes_awaiting_sample.extend(["scene_a", "scene_b"])
-        record_sample = node.evaluation_handler.record_sample
+        record_sample = node.evaluation_handlers[0].record_sample
 
-        def fail(**_):
-            raise ValueError("cannot be evaluated")
-
-        node.evaluation_handler.record_sample = fail
+        node.evaluation_handlers[0].record_sample = _failing
         AutonomyEvaluation.evaluate_sample(node, _NEXT_SCENE[0], _sample_messages(_NEXT_SCENE[0]))
-        node.evaluation_handler.record_sample = record_sample
+        node.evaluation_handlers[0].record_sample = record_sample
         AutonomyEvaluation.evaluate_sample(node, _NEXT_SCENE[1], _sample_messages(_NEXT_SCENE[1]))
 
-        assert node.evaluation_handler.recorded_samples[0]["scene_id"] == "scene_b"
+        assert node.evaluation_handlers[0].recorded_samples[0]["scene_id"] == "scene_b"
         assert node.num_advances == 2
 
     def test_external_sample_source_leaves_publishing_samples_to_others(self):
@@ -430,7 +437,73 @@ class TestEvaluateSample:
         # the scenes are only reported to whoever published the samples, so no sample waits for one
         assert not node.samples_awaiting_scene
         # but the samples belong to the current scene, until whoever publishes them starts the next one
-        assert node.samples_of_current_scene == node.evaluation_handler.recorded_samples
+        assert node.samples_of_current_scene == [[entry] for entry in node.evaluation_handlers[0].recorded_samples]
+
+
+class TestEvaluateSampleBySeveralEvaluations:
+    """Tests evaluating each sample by all evaluations of the node, e.g. those of an area."""
+
+    def _node(self, requests_samples: bool = True) -> SimpleNamespace:
+        """Stub a node running an evaluation of the prediction and the label, and one of the label and its meta information."""
+        return _evaluating_node(
+            requests_samples,
+            handlers=[
+                _RecordingEvaluationHandler("detection", inputs=("prediction", "label")),
+                _RecordingEvaluationHandler("labels", inputs=("label", "label_meta_info")),
+            ],
+        )
+
+    def test_passes_each_evaluation_the_messages_of_its_inputs(self):
+        """Every evaluation records the sample, from the messages of the inputs it reads only."""
+        node = self._node()
+        messages = _sample_messages(_NEXT_SCENE[0])
+
+        AutonomyEvaluation.evaluate_sample(node, _NEXT_SCENE[0], messages)
+
+        detection, labels = node.evaluation_handlers
+        assert detection.recorded_messages == {"prediction": messages["prediction"], "label": messages["label"]}
+        assert labels.recorded_messages == {"label": messages["label"], "label_meta_info": messages["label_meta_info"]}
+        assert node.num_evaluated_samples == 1
+        assert node.num_recorded_samples == {"detection": 1, "labels": 1}
+
+    def test_attributes_the_scene_of_the_dataset_to_the_entries_of_all_evaluations(self):
+        """Each evaluation aggregates the samples of the scene the dataset published them from."""
+        node = self._node()
+        node.scenes_awaiting_sample.append("scene_a")
+
+        AutonomyEvaluation.evaluate_sample(node, _NEXT_SCENE[0], _sample_messages(_NEXT_SCENE[0]))
+        AutonomyEvaluation.evaluate_sample(node, _NEXT_SCENE[1], _sample_messages(_NEXT_SCENE[1]))
+        AutonomyEvaluation.assign_scenes(node, ["scene_b"])
+
+        for handler in node.evaluation_handlers:
+            assert [entry["scene_id"] for entry in handler.recorded_samples] == ["scene_a", "scene_b"]
+
+    def test_evaluation_that_cannot_evaluate_a_sample_leaves_it_to_the_others(self):
+        """A sample one evaluation cannot evaluate is still evaluated by the others, and keeps its scene."""
+        node = self._node()
+        node.scenes_awaiting_sample.append("scene_a")
+        detection, labels = node.evaluation_handlers
+
+        detection.record_sample = _failing
+        AutonomyEvaluation.evaluate_sample(node, _NEXT_SCENE[0], _sample_messages(_NEXT_SCENE[0]))
+
+        assert node.num_evaluated_samples == 1
+        assert node.num_skipped_samples == {"detection": 1, "labels": 0}
+        assert node.num_recorded_samples == {"detection": 0, "labels": 1}
+        assert labels.recorded_samples[0]["scene_id"] == "scene_a"
+        assert any("Evaluation 'detection' skips sample" in message for message in node.get_logger().messages)
+
+    def test_sample_no_evaluation_can_evaluate_drops_its_scene(self):
+        """A sample left out by all evaluations is dropped together with its scene."""
+        node = self._node()
+        node.scenes_awaiting_sample.extend(["scene_a", "scene_b"])
+        for handler in node.evaluation_handlers:
+            handler.record_sample = _failing
+
+        AutonomyEvaluation.evaluate_sample(node, _NEXT_SCENE[0], _sample_messages(_NEXT_SCENE[0]))
+
+        assert node.num_evaluated_samples == 0
+        assert list(node.scenes_awaiting_sample) == ["scene_b"]
 
 
 class _FakeRequestClient:
@@ -786,19 +859,25 @@ class TestIsPublished:
         assert "label_meta_info" in node.get_logger().messages[0]
 
 
-def _node(num_evaluated_samples: int = 2, results_path: str = "/results/evaluation.json") -> SimpleNamespace:
-    """Stub the node state that finalizing an evaluation reads, without initializing ROS."""
-    return SimpleNamespace(
+def _node(
+    num_evaluated_samples: int = 2, results_path: str = "/results/evaluation.json", handlers: list = None
+) -> SimpleNamespace:
+    """Stub the node state that finalizing the evaluations reads, without initializing ROS."""
+    handlers = handlers or [_FakeEvaluationHandler()]
+    node = SimpleNamespace(
         evaluation="counting",
         evaluation_finished=False,
-        evaluation_handler=_FakeEvaluationHandler(),
+        evaluation_handlers=handlers,
         num_evaluated_samples=num_evaluated_samples,
+        num_recorded_samples={handler.name: num_evaluated_samples for handler in handlers},
         results_path=results_path,
         request_timer=SimpleNamespace(cancel=lambda: None),
         separates_scenes=False,
-        num_skipped_samples=0,
+        num_skipped_samples={handler.name: 0 for handler in handlers},
         get_logger=lambda logger=_FakeLogger(): logger,
     )
+    node.report_results = partial(AutonomyEvaluation.report_results, node)
+    return node
 
 
 class TestFinalizeEvaluation:
@@ -810,8 +889,8 @@ class TestFinalizeEvaluation:
 
         AutonomyEvaluation.finalize_evaluation(node)
 
-        assert node.evaluation_handler.finalized_complete is True
-        assert node.evaluation_handler.written_results["complete"] is True
+        assert node.evaluation_handlers[0].finalized_complete is True
+        assert node.evaluation_handlers[0].written_results["complete"] is True
 
     def test_interrupted_evaluation_writes_incomplete_results(self):
         """An evaluation stopped before its last sample, e.g. with Ctrl-C, still writes its results."""
@@ -819,8 +898,8 @@ class TestFinalizeEvaluation:
 
         AutonomyEvaluation.finalize_evaluation(node, complete=False)
 
-        assert node.evaluation_handler.finalized_complete is False
-        assert node.evaluation_handler.written_results["complete"] is False
+        assert node.evaluation_handlers[0].finalized_complete is False
+        assert node.evaluation_handlers[0].written_results["complete"] is False
 
     def test_finished_evaluation_is_not_finalized_again_on_shutdown(self):
         """Shutting down after the last sample must not overwrite the results with incomplete ones."""
@@ -829,8 +908,8 @@ class TestFinalizeEvaluation:
 
         AutonomyEvaluation.finalize_evaluation(node, complete=False)
 
-        assert node.evaluation_handler.finalized_complete is True
-        assert node.evaluation_handler.written_results["complete"] is True
+        assert node.evaluation_handlers[0].finalized_complete is True
+        assert node.evaluation_handlers[0].written_results["complete"] is True
 
     def test_manual_playback_writes_its_results_when_stopped(self):
         """With manual playback, which runs no request timer, the results are written once the node is stopped."""
@@ -839,7 +918,7 @@ class TestFinalizeEvaluation:
 
         AutonomyEvaluation.finalize_evaluation(node, complete=False)
 
-        assert node.evaluation_handler.written_results["complete"] is False
+        assert node.evaluation_handlers[0].written_results["complete"] is False
 
     def test_interrupted_evaluation_without_samples_writes_nothing(self):
         """An evaluation interrupted before its first sample has no results to write."""
@@ -847,14 +926,14 @@ class TestFinalizeEvaluation:
 
         AutonomyEvaluation.finalize_evaluation(node, complete=False)
 
-        assert node.evaluation_handler.written_results is None
+        assert node.evaluation_handlers[0].written_results is None
 
     def test_logs_whether_the_metrics_passed_their_limits(self):
         """With limits configured, the verdict over all samples is logged."""
         node = _node()
         verdict = {"passed": False, "num_passed": 1, "num_failed": 1, "checks": [{}, {}]}
-        finalize = node.evaluation_handler.finalize
-        node.evaluation_handler.finalize = lambda complete=True: {**finalize(complete), "limits": verdict}
+        finalize = node.evaluation_handlers[0].finalize
+        node.evaluation_handlers[0].finalize = lambda complete=True: {**finalize(complete), "limits": verdict}
 
         AutonomyEvaluation.finalize_evaluation(node)
 
@@ -866,8 +945,78 @@ class TestFinalizeEvaluation:
 
         AutonomyEvaluation.finalize_evaluation(node, complete=False)
 
-        assert node.evaluation_handler.finalized_complete is False
-        assert node.evaluation_handler.written_results is None
+        assert node.evaluation_handlers[0].finalized_complete is False
+        assert node.evaluation_handlers[0].written_results is None
+
+    def test_writes_the_results_of_each_evaluation_to_a_file_of_its_own(self):
+        """The name of each evaluation replaces the placeholder in 'results_path'."""
+        node = _node(
+            results_path="/results/{evaluation}.json",
+            handlers=[_FakeEvaluationHandler("criticality"), _FakeEvaluationHandler("comfort")],
+        )
+
+        AutonomyEvaluation.finalize_evaluation(node)
+
+        assert [handler.written_path for handler in node.evaluation_handlers] == [
+            "/results/criticality.json",
+            "/results/comfort.json",
+        ]
+
+    def test_evaluation_without_samples_writes_nothing_while_the_others_do(self):
+        """An evaluation that could evaluate no sample has no results, the other evaluations still write theirs."""
+        node = _node(
+            results_path="/results/{evaluation}.json", handlers=[_FakeEvaluationHandler("a"), _FakeEvaluationHandler("b")]
+        )
+        node.num_recorded_samples["a"] = 0
+
+        AutonomyEvaluation.finalize_evaluation(node)
+
+        assert [handler.written_path for handler in node.evaluation_handlers] == [None, "/results/b.json"]
+        assert "Evaluation 'a' evaluated no sample, no metrics are aggregated" in node.get_logger().messages
+
+
+class TestCheckResultsPath:
+    """Tests that each evaluation writes its results to a file of its own."""
+
+    @pytest.mark.parametrize(
+        "results_path, names",
+        [
+            ("/results/evaluation.json", ["criticality"]),
+            ("/results/{evaluation}.json", ["criticality"]),
+            ("/results/{evaluation}.json", ["criticality", "comfort"]),
+            ("", ["criticality", "comfort"]),
+        ],
+    )
+    def test_accepts_a_file_per_evaluation(self, results_path, names):
+        """A single evaluation writes to any path, several need the placeholder, and without path results are logged."""
+        AutonomyEvaluation.check_results_path(results_path, [SimpleNamespace(name=name) for name in names])
+
+    def test_rejects_several_evaluations_writing_to_the_same_file(self):
+        """Several evaluations cannot share a file without the placeholder of their name."""
+        with pytest.raises(ValueError, match="'{evaluation}'"):
+            AutonomyEvaluation.check_results_path(
+                "/results/driving_behavior.json", [SimpleNamespace(name="a"), SimpleNamespace(name="b")]
+            )
+
+
+class TestVisualizationOutputs:
+    """Tests collecting the outputs the evaluations of the node publish their visualization on."""
+
+    def test_collects_the_outputs_of_all_evaluations(self):
+        """Each evaluation publishes its outputs next to those of the others."""
+        evaluations = [
+            SimpleNamespace(visualization_outputs=lambda: {"matches": int}),
+            SimpleNamespace(visualization_outputs=lambda: {"lead_vehicle": float}),
+        ]
+
+        assert AutonomyEvaluation.visualization_outputs(evaluations) == {"matches": int, "lead_vehicle": float}
+
+    def test_rejects_two_evaluations_publishing_the_same_output(self):
+        """Two outputs of the same name would publish on the same topic."""
+        evaluations = [SimpleNamespace(visualization_outputs=lambda: {"matches": int})] * 2
+
+        with pytest.raises(ValueError, match="'matches' twice"):
+            AutonomyEvaluation.visualization_outputs(evaluations)
 
 
 def _finishing_node(requests_samples: bool, publishing_finished: bool = False) -> SimpleNamespace:
@@ -962,9 +1111,9 @@ def _scene_separating_node(requests_samples: bool = False) -> SimpleNamespace:
 
 
 def _evaluated_samples(node: SimpleNamespace, num_samples: int) -> list:
-    """Evaluate the given number of samples in the current scene of the node, still without a scene."""
+    """Evaluate the given number of samples by one evaluation in the current scene of the node, still without a scene."""
     entries = [{"sample_id": str(index), "scene_id": None, "stamp": float(index), "metrics": {}} for index in range(num_samples)]
-    node.samples_of_current_scene.extend(entries)
+    node.samples_of_current_scene.extend([entry] for entry in entries)
     return entries
 
 

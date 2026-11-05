@@ -1,7 +1,7 @@
 # Copyright Thinking Cars GmbH
 # SPDX-License-Identifier: Apache-2.0
 
-"""Criticality metrics of the driving behavior evaluation: how critically the ego vehicle interacts with other road users.
+"""Metrics of the criticality evaluation: how critically the ego vehicle interacts with other road users.
 
 All metrics read the evaluated ``ego_data`` of the ego vehicle and the
 ``objects`` around it as context, each an oriented rectangle on the ground

@@ -1,7 +1,7 @@
 # Copyright Thinking Cars GmbH
 # SPDX-License-Identifier: Apache-2.0
 
-"""Progress metrics of the driving behavior evaluation: whether the ego vehicle gets ahead.
+"""Metrics of the progress evaluation: whether the ego vehicle gets ahead.
 
 - ``distance``: distance the ego vehicle drives, its mean speed and how long it
   stands still, e.g. to tell an ego vehicle that drives safely from one that
@@ -31,8 +31,7 @@ import math
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from autonomy_evaluation.evaluations.driving_behavior.ComfortMetrics import ego_inputs
-from autonomy_evaluation.evaluations.driving_behavior.states import ego_state
+from autonomy_evaluation.evaluations.driving_behavior.states import ego_inputs, ego_state
 from autonomy_evaluation.evaluations.Metric import Aggregation, CONTEXT, Input, Metric, Sample
 from autonomy_evaluation.evaluations.sampling import sampling_period
 from autonomy_evaluation.utils.PlanarUtils import PlanarUtils

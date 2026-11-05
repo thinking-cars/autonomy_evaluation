@@ -17,7 +17,7 @@ import json
 from typing import Any, Dict, List
 
 import pytest
-from autonomy_evaluation.evaluations.Evaluation import Evaluation, flatten_config, unflatten_config
+from autonomy_evaluation.evaluations.Evaluation import Evaluation, flatten_config, merged_inputs, unflatten_config
 from autonomy_evaluation.evaluations.Metric import Aggregation, CONTEXT, EVALUATED, Input, Metric, MetricGroup, REFERENCE, Sample
 
 
@@ -895,3 +895,31 @@ class TestWarmUp:
         results = _record(_ComposedEvaluation(), _SAMPLES).finalize()
 
         assert (results["num_samples"], results["num_warm_up_samples"]) == (3, 0)
+
+
+class TestMergedInputs:
+    """Tests merging the inputs of evaluations that run together, i.e. on the same samples."""
+
+    def test_reads_an_input_of_the_same_name_once(self):
+        """Evaluations reading an input of the same name read it from the same topic."""
+        evaluations = [
+            CountingEvaluation(),
+            _InputsEvaluation({"label": Input(object, REFERENCE), "map": Input(object, CONTEXT)}),
+        ]
+
+        assert list(merged_inputs(evaluations)) == ["prediction", "label", "map"]
+
+    def test_rejects_an_input_of_the_same_name_declared_differently(self):
+        """An input cannot be evaluated by one evaluation and serve as reference to another."""
+        evaluations = [CountingEvaluation(), _InputsEvaluation({"label": Input(object, EVALUATED)})]
+
+        with pytest.raises(ValueError, match="'counting' reads input 'label'.*'inputs'"):
+            merged_inputs(evaluations)
+
+    def test_merges_the_inputs_of_all_metrics_if_available(self):
+        """The launch file remaps the inputs of all metrics, also of those the configuration leaves out."""
+        evaluation = CountingEvaluation()
+        evaluation.configure({"metrics": ["num_predictions"]})
+
+        assert list(merged_inputs([evaluation])) == ["prediction"]
+        assert list(merged_inputs([evaluation], available=True)) == ["prediction", "label"]

@@ -1,7 +1,7 @@
 # Copyright Thinking Cars GmbH
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the rule compliance metrics of the driving behavior evaluation: drivable area, driving direction and speed limit.
+"""Tests for the rule compliance evaluation of the driving behavior: drivable area, driving direction and speed limit.
 
 An ego vehicle of 4 m length and 2 m width drives on a straight road of two one-way lanes along the
 x axis with the urban speed limit of 50 km/h, or on a two-way road limited to 30 km/h with a sidewalk
@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 
 import pytest
-from autonomy_evaluation.evaluations.driving_behavior.DrivingBehavior import DrivingBehavior
+from autonomy_evaluation.evaluations.driving_behavior.rule_compliance.RuleCompliance import RuleCompliance
 from tests.evaluations.driving_behavior.messages import ego_data
 from tests.utils.lanelet2_maps import road_with_sidewalk, two_lane_road
 
@@ -22,12 +22,12 @@ _PERIOD = 0.1
 
 def _evaluate(egos, lanelet2_map, metrics=None, config=None) -> dict:
     """Record one sample per set of ``ego_data`` keyword arguments, 0.1 s apart, with the map, and aggregate them."""
-    evaluation = DrivingBehavior()
-    evaluation.configure({"metrics": metrics or ["rule_compliance"], **(config or {})})
+    evaluation = RuleCompliance()
+    evaluation.configure({**({"metrics": metrics} if metrics else {}), **(config or {})})
     for index, ego in enumerate(egos):
         stamp = index * _PERIOD
         evaluation.record_sample(sample_id=str(index), stamp=stamp, ego_data=ego_data(stamp=stamp, **ego), map=lanelet2_map)
-    return evaluation.finalize()["metrics"]["rule_compliance"]
+    return evaluation.finalize()["metrics"]
 
 
 class TestDrivableArea:
@@ -149,9 +149,7 @@ class TestSpeedLimit:
         """Exceeding the limit by less than the tolerance is no violation, but still reported as excess."""
         road, _ = two_lane_road()
 
-        speed_limit = _evaluate(
-            [{"x": 10.0, "vel_lon": 15.0}], road, config={"rule_compliance": {"speed_limit": {"tolerance": 2.0}}}
-        )["speed_limit"]
+        speed_limit = _evaluate([{"x": 10.0, "vel_lon": 15.0}], road, config={"speed_limit": {"tolerance": 2.0}})["speed_limit"]
 
         assert speed_limit["_value_"] == 0.0
         assert speed_limit["max_excess"] == pytest.approx(15.0 - 50.0 / 3.6)
@@ -171,8 +169,7 @@ class TestRuleComplianceSelection:
 
     def test_reads_the_ego_vehicle_and_the_optional_map_only(self):
         """The rules are checked against the map, without other road users."""
-        evaluation = DrivingBehavior()
-        evaluation.configure({"metrics": ["rule_compliance"]})
+        evaluation = RuleCompliance()
 
         inputs = evaluation.inputs()
 

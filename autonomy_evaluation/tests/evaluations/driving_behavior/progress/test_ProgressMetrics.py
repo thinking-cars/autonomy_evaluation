@@ -1,7 +1,7 @@
 # Copyright Thinking Cars GmbH
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the progress metrics of the driving behavior evaluation: the distance driven and the progress along the route.
+"""Tests for the progress evaluation of the driving behavior: the distance driven and the progress along the route.
 
 The ego vehicle drives along the x axis, sampled at 10 Hz, at speeds simple enough to compute the
 distance and the time standing still by hand, along a route of 100 m along the x axis.
@@ -10,7 +10,7 @@ distance and the time standing still by hand, along a route of 100 m along the x
 from __future__ import annotations
 
 import pytest
-from autonomy_evaluation.evaluations.driving_behavior.DrivingBehavior import DrivingBehavior
+from autonomy_evaluation.evaluations.driving_behavior.progress.Progress import Progress
 from geometry_msgs.msg import Point
 from tests.evaluations.driving_behavior.messages import ego_data, route, static_tf_buffer
 
@@ -19,8 +19,8 @@ _PERIOD = 0.1
 
 def _evaluate(egos, scene_ids=None, config=None, routes=None, tf_buffer=None) -> dict:
     """Record one sample per set of ``ego_data`` keyword arguments, 0.1 s apart, with the given routes, and aggregate them."""
-    evaluation = DrivingBehavior()
-    evaluation.configure({"metrics": ["progress"], **(config or {})})
+    evaluation = Progress()
+    evaluation.configure(config or {})
     evaluation.tf_buffer = tf_buffer
     for index, ego in enumerate(egos):
         stamp = index * _PERIOD
@@ -31,7 +31,7 @@ def _evaluate(egos, scene_ids=None, config=None, routes=None, tf_buffer=None) ->
             ego_data=ego_data(stamp=stamp, **ego),
             route=routes[index] if routes else None,
         )
-    return evaluation.finalize()["metrics"]["progress"]
+    return evaluation.finalize()["metrics"]
 
 
 # a route of 100 m along the x axis, through a point every 10 m
@@ -165,14 +165,14 @@ class TestRouteProgress:
         """Without route message, the route planned in the ego data is followed towards its last point."""
         planned = [Point(x=10.0 * index) for index in range(11)]
         egos = [{"x": 0.0}, {"x": 25.0}]
-        evaluation = DrivingBehavior()
-        evaluation.configure({"metrics": ["progress.route"]})
+        evaluation = Progress()
+        evaluation.configure({"metrics": ["route"]})
         for index, ego in enumerate(egos):
             message = ego_data(stamp=index * _PERIOD, **ego)
             message.route_planned = planned
             evaluation.record_sample(sample_id=str(index), stamp=index * _PERIOD, ego_data=message, route=None)
 
-        assert evaluation.finalize()["metrics"]["progress"]["route"]["_value_"] == pytest.approx(0.25)
+        assert evaluation.finalize()["metrics"]["route"]["_value_"] == pytest.approx(0.25)
 
     def test_without_route_nothing_is_measured(self):
         """Without route, there is no progress along one."""
@@ -183,8 +183,8 @@ class TestRouteProgress:
 
     def test_reads_the_latest_route_without_waiting_for_it(self):
         """The route is planned independently of the samples, so each sample is passed the latest one."""
-        evaluation = DrivingBehavior()
-        evaluation.configure({"metrics": ["progress.route"]})
+        evaluation = Progress()
+        evaluation.configure({"metrics": ["route"]})
 
         declared = evaluation.inputs()["route"]
 

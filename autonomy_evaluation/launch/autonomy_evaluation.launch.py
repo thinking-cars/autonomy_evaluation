@@ -4,10 +4,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
-from typing import Mapping
+from typing import Mapping, Sequence
 
 from ament_index_python.packages import get_package_share_directory
-from autonomy_evaluation.evaluations import Evaluation, load_evaluation
+from autonomy_evaluation.evaluations import Evaluation, load_evaluations, merged_inputs
 from launch import LaunchContext, LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition
@@ -16,25 +16,25 @@ from launch_ros.actions import Node, SetParameter
 from launch_ros.parameter_descriptions import ParameterValue
 
 
-def input_remappings(evaluation: Evaluation, launch_configurations: Mapping[str, str]) -> list[tuple[str, str]]:
-    """Remap the topics the evaluation may read onto the topics given by the launch arguments of their names.
+def input_remappings(evaluations: Sequence[Evaluation], launch_configurations: Mapping[str, str]) -> list[tuple[str, str]]:
+    """Remap the topics the evaluations may read onto the topics given by the launch arguments of their names.
 
-    Every topic any metric of the evaluation reads, whatever its role and whether it is optional, is configured by
-    a launch argument of its name, e.g. ``prediction:=/object_list/prediction``. As the metrics the evaluation
-    computes are only selected by its configuration, the topics of all its metrics are remapped; the node only
-    subscribes to those of the computed metrics. A topic without such an argument is subscribed in the private
-    namespace of the node, except for a topic published next to another one, which the node derives from the
-    topic of that one.
+    Every topic any metric of the evaluations reads, whatever its role and whether it is optional, is configured by
+    a launch argument of its name, e.g. ``prediction:=/object_list/prediction``; evaluations that read an input of
+    the same name read it from the same topic. As the metrics the evaluations compute are only selected by their
+    configuration, the topics of all their metrics are remapped; the node only subscribes to those of the computed
+    metrics. A topic without such an argument is subscribed in the private namespace of the node, except for a topic
+    published next to another one, which the node derives from the topic of that one.
 
     Args:
-        evaluation (Evaluation): evaluation to run
+        evaluations (Sequence[Evaluation]): evaluations to run
         launch_configurations (Mapping[str, str]): values of the launch arguments by name
 
     Returns:
         list[tuple[str, str]]: remappings of the node-relative input names
     """
     remappings = []
-    for name, declared in evaluation.available_inputs().items():
+    for name, declared in merged_inputs(evaluations, available=True).items():
         if declared.static:
             continue  # no topic, but context the node provides, e.g. the map
         if name in launch_configurations:
@@ -44,22 +44,28 @@ def input_remappings(evaluation: Evaluation, launch_configurations: Mapping[str,
     return remappings
 
 
-def rviz_config(evaluation_name: str, config_directory: str) -> str:
-    """Choose the RViz configuration showing the visualization of the evaluation.
+def rviz_config(selection: str, evaluations: Sequence[Evaluation], config_directory: str) -> str:
+    """Choose the RViz configuration showing the visualization of the evaluations.
 
     Args:
-        evaluation_name (str): name the evaluation is selected with
+        selection (str): selection of the evaluations, e.g. the name of an evaluation or of an area
+        evaluations (Sequence[Evaluation]): selected evaluations
         config_directory (str): directory holding the RViz configurations
 
     Returns:
-        str: path of '<evaluation>.rviz' if the directory holds one, of the default 'conf.rviz' otherwise
+        str: path of the first configuration the directory holds of '<selection>.rviz', '<evaluation>.rviz' of the
+            selected evaluations and '<area>.rviz' of their areas, of the default 'conf.rviz' otherwise
     """
-    path = os.path.join(config_directory, f"{evaluation_name}.rviz")
-    return path if os.path.isfile(path) else os.path.join(config_directory, "conf.rviz")
+    names = [selection, *(evaluation.name for evaluation in evaluations), *(evaluation.AREA for evaluation in evaluations)]
+    for name in names:
+        path = os.path.join(config_directory, f"{name}.rviz")
+        if name and os.path.isfile(path):
+            return path
+    return os.path.join(config_directory, "conf.rviz")
 
 
 def launch_node(context: LaunchContext, remappings: list) -> list[Node]:
-    """Launch the node with the topics of the selected evaluation remapped, and RViz showing its visualization.
+    """Launch the node with the topics of the selected evaluations remapped, and RViz showing their visualization.
 
     Args:
         context (LaunchContext): launch context holding the launch arguments
@@ -68,9 +74,9 @@ def launch_node(context: LaunchContext, remappings: list) -> list[Node]:
     Returns:
         list[Node]: node and, if visualizing, RViz to launch
     """
-    evaluation_name = LaunchConfiguration("evaluation").perform(context)
-    evaluation = load_evaluation(evaluation_name)
-    # a parameter file configures the evaluation, e.g. which metrics it computes, by parameters named after it
+    selection = LaunchConfiguration("evaluation").perform(context)
+    evaluations = load_evaluations(selection)
+    # a parameter file configures each evaluation, e.g. which metrics it computes, by parameters named after it
     config = LaunchConfiguration("config").perform(context)
     node = Node(
         package="autonomy_evaluation",
@@ -91,7 +97,7 @@ def launch_node(context: LaunchContext, remappings: list) -> list[Node]:
             {"map_server": ParameterValue(LaunchConfiguration("map_server"), value_type=str)},
         ],
         arguments=["--ros-args", "--log-level", LaunchConfiguration("log_level")],
-        remappings=input_remappings(evaluation, context.launch_configurations) + remappings,
+        remappings=input_remappings(evaluations, context.launch_configurations) + remappings,
         output="screen",
         emulate_tty=True,
     )
@@ -101,7 +107,7 @@ def launch_node(context: LaunchContext, remappings: list) -> list[Node]:
         name="rviz2",
         arguments=[
             "-d",
-            rviz_config(evaluation_name, os.path.join(get_package_share_directory("autonomy_evaluation"), "config")),
+            rviz_config(selection, evaluations, os.path.join(get_package_share_directory("autonomy_evaluation"), "config")),
         ],
         condition=IfCondition(LaunchConfiguration("visualize")),
         output="screen",
@@ -139,13 +145,15 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "evaluation",
             default_value="object_detection_3d",
-            description="name of an evaluation of this package, or '<module>:<class>' of an evaluation implemented in "
-            "another package; each topic the evaluation reads is set by an argument of its name, e.g. prediction:=/topic",
+            description="evaluations to run on the same samples: the name of an evaluation of this package, of an area "
+            "running all its evaluations, e.g. 'driving_behavior', or '<module>:<class>' of an evaluation implemented in "
+            "another package; several as comma-separated list, e.g. 'criticality,comfort'; each topic the evaluations read "
+            "is set by an argument of its name, e.g. prediction:=/topic",
         ),
         DeclareLaunchArgument(
             "config",
             default_value="",
-            description="path of a ROS parameter file configuring the evaluation, e.g. which metrics it computes, by "
+            description="path of a ROS parameter file configuring the evaluations, e.g. which metrics they compute, by "
             "parameters named '<evaluation>.<entry>' (default configuration if empty)",
         ),
         DeclareLaunchArgument("name", default_value="autonomy_evaluation", description="node name"),
@@ -203,12 +211,13 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "results_path",
             default_value="",
-            description="path of the JSON file the evaluation results are written to (results are only logged if empty)",
+            description="path of the JSON file the results of an evaluation are written to, in which '{evaluation}' is "
+            "replaced by the name of the evaluation, as required to run several (results are only logged if empty)",
         ),
     ]
 
-    # The topics the evaluation reads and the visualization RViz shows depend on the selected
-    # evaluation, so the node and RViz are only created once the launch arguments are known
+    # The topics the evaluations read and the visualization RViz shows depend on the selected
+    # evaluations, so the node and RViz are only created once the launch arguments are known
     remappings = [(la.default_value[0].text, LaunchConfiguration(la.name)) for la in remappable_topics]
     nodes = OpaqueFunction(function=launch_node, kwargs={"remappings": remappings})
 

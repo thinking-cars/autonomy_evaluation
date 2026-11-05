@@ -11,7 +11,7 @@ The evaluations of this repository are organized in three levels: an **area** of
 | | [`progress`](#progress) | `distance`, `route` | whether the ego vehicle gets ahead along its route |
 | | [`comfort`](#comfort) | `acceleration`, `jerk`, `yaw_rate` | how smoothly the ego vehicle drives |
 
-The node runs one evaluation, selected by its name, e.g. `evaluation:=object_detection_3d`; the evaluations of the driving behavior run together as `evaluation:=driving_behavior`. Any evaluation can run on a dataset or in closed loop, e.g. alongside a simulation, and the driving behavior evaluates whatever drives the ego vehicle, e.g. a whole automated driving stack, or a planner fed with the ground truth of a simulation instead of a perception.
+The node runs the evaluations selected by `evaluation`: one by its name, e.g. `evaluation:=object_detection_3d`, all evaluations of an area by the name of the area, e.g. `evaluation:=driving_behavior`, or several as comma-separated list of both, e.g. `evaluation:=criticality,comfort`. The evaluations of a node are evaluated on the same samples, so they read an input of the same name from the same topic. Each evaluation keeps its own configuration, version and results, which it writes to a file of its own, e.g. `results_path:=/results/{evaluation}.json` with the name of each evaluation in place of `{evaluation}`. Any evaluation can run on a dataset or in closed loop, e.g. alongside a simulation, and the driving behavior evaluates whatever drives the ego vehicle, e.g. a whole automated driving stack, or a planner fed with the ground truth of a simulation instead of a perception.
 
 ## Perception
 
@@ -229,14 +229,14 @@ The top-level `_value_` is the average displacement error. A value that cannot b
 
 Evaluates the ego vehicle a system under test drives, e.g. an automated driving stack or a planner in a closed-loop simulation, by its behavior over the whole run: its criticality towards the other road users, i.e. how close it comes to colliding with them or does, its compliance with the traffic rules, i.e. whether it stays on the road, drives in the direction of travel and keeps the speed limit, its progress, i.e. whether it gets ahead along its route, and its comfort, i.e. how smoothly it drives.
 
-The area holds four evaluations, each of a group of metrics: [Criticality](#criticality), [Rule Compliance](#rule-compliance), [Progress](#progress) and [Comfort](#comfort). As they evaluate the same run of the same ego vehicle, they run together in one node, `evaluation:=driving_behavior`, which computes all of them by default; its `metrics` entry selects single evaluations, e.g. `[criticality, comfort]`, or single metrics, e.g. `criticality.ttc`.
+The area holds four evaluations: [Criticality](#criticality), [Rule Compliance](#rule-compliance), [Progress](#progress) and [Comfort](#comfort). As they evaluate the same run of the same ego vehicle, they usually run together in one node, all of them with `evaluation:=driving_behavior` or some of them, e.g. `evaluation:=criticality,comfort`; the `metrics` entry of each evaluation selects its metrics, e.g. `[collision, ttc]` of `criticality`.
 
 | Topic | Type | Role | Description |
 | --- | --- | --- | --- |
 | `ego_data` | `perception_msgs/EgoData` | evaluated | state of the ego vehicle |
-| `objects` | `perception_msgs/ObjectList` | context | other road users, only read by the `criticality` metrics; objects in another frame than `ego_data` are transformed into its frame with the transforms published on `/tf` and `/tf_static` |
-| `route` (optional) | `route_planning_msgs/Route` | context | route planned for the ego vehicle, only read by `progress.route`; every sample is passed the latest route message, as the route is planned independently of the samples; without route message, the `route_planned` of `ego_data` is the route |
-| `map` (optional) | Lanelet2 map | context | lanes of the current scene, read by `criticality.collision`, `criticality.thw` and the `rule_compliance` metrics from the parameters of the node set as `map_server` (see below); used while given in the frame of `ego_data`; without map, both criticality metrics fall back to heuristics and the rules are not checked |
+| `objects` | `perception_msgs/ObjectList` | context | other road users, only read by `criticality`; objects in another frame than `ego_data` are transformed into its frame with the transforms published on `/tf` and `/tf_static` |
+| `route` (optional) | `route_planning_msgs/Route` | context | route planned for the ego vehicle, only read by the `route` metric of `progress`; every sample is passed the latest route message, as the route is planned independently of the samples; without route message, the `route_planned` of `ego_data` is the route |
+| `map` (optional) | Lanelet2 map | context | lanes of the current scene, read by the `collision` and `thw` metrics of `criticality` and by `rule_compliance` from the parameters of the node set as `map_server` (see below); used while given in the frame of `ego_data`; without map, both criticality metrics fall back to heuristics and the rules are not checked |
 
 The samples usually come from a recorded simulation run, which [autonomy_datasets](https://github.com/thinking-cars/autonomy_datasets) replays with the dataset as sample source, so that they are attributed to the scenes of the recordings and the evaluation ends with the last sample. With `sample_source:=external`, e.g. evaluating a running simulation live, the simulation separates its scenarios into scenes by calling the `~/next_scene` service of the node between two of them, and the run ends once it calls the `~/finish` service. Every metric over time is computed per contiguous sequence of samples (see [Sequences of samples](#sequences-of-samples)), and gaps of missing samples are reported under `sampling`.
 
@@ -251,27 +251,28 @@ All evaluations of the driving behavior are computed based on the following assu
 - **Velocities** are given along the heading and across it, as the `perception_msgs` state models define them, and are velocities over ground. An object whose velocity is not set stands still; the ego vehicle without velocity has no time to collision and no time headway.
 - **Set entries**: a state entry that `perception_msgs` marks as not set, i.e. `CONTINUOUS_STATE_COVARIANCE_INVALID` on the diagonal of the state covariance, is unavailable. A state without covariance has all its entries set.
 
-The configuration entries shared by all evaluations of the driving behavior (see [Configuration](#configuration)) are:
+Each evaluation of the driving behavior is configured on its own (see [Configuration](#configuration)), e.g. by the entries:
 
 | Entry | Default | Description |
 | --- | --- | --- |
-| `metrics` | `[criticality, rule_compliance, progress, comfort]` | selected evaluations, e.g. `comfort`, or single metrics of an evaluation, e.g. `criticality.ttc` |
-| `ego_object_id` | `-1` | ID of the ego vehicle among the objects, which is left out of them; `-1` if the objects do not contain it |
+| `metrics` | all metrics of the evaluation | selected metrics, e.g. `[collision, ttc]` of `criticality` |
+| `ego_object_id` | `-1` | only `criticality`: ID of the ego vehicle among the objects, which is left out of them; `-1` if the objects do not contain it |
 | `max_sample_interval` | `1.0` | seconds between two consecutive samples beyond which they belong to different sequences |
 | `max_jump_speed` | `100.0` | speed in `m/s` beyond which the position jumps between two consecutive samples, e.g. a teleport, which then belong to different sequences |
 
 ```yaml
 /**:
   ros__parameters:
-    driving_behavior:
-      metrics: [criticality, comfort.jerk]  # all criticality metrics, but the jerk only of the comfort metrics
+    criticality:
+      metrics: [collision, ttc]  # compute and report the collisions and the time to collision only
       ego_object_id: 0  # the simulation lists the ego vehicle as object 0
-      criticality:
-        ttc:
-          exposure_threshold: 1.5
+      ttc:
+        exposure_threshold: 1.5
+    comfort:
+      metrics: [jerk]
 ```
 
-The results hold the `metrics` over all evaluated samples and, under `scenes`, those of each scene, under the name of each evaluation, e.g. `criticality`. Each metric holds its aggregated value under `_value_`, next to its sub-metrics. A value that cannot be computed, e.g. a jerk of single samples, is `null`. The evaluation reports no overall value, so the top-level `_value_` is `null`.
+Each evaluation writes results of its own, e.g. `criticality.json`, which hold its `metrics` over all evaluated samples and, under `scenes`, those of each scene. Each metric holds its aggregated value under `_value_`, next to its sub-metrics. A value that cannot be computed, e.g. a jerk of single samples, is `null`. The evaluations of the driving behavior report no overall value, so the top-level `_value_` is `null`.
 
 ### Criticality
 
@@ -284,37 +285,37 @@ How close the ego vehicle comes to colliding with the other road users, or does.
 
 | Entry | Default | Description |
 | --- | --- | --- |
-| `criticality.collision.standstill_speed` | `0.1` | speed in `m/s` below which a road user stands still |
-| `criticality.ttc.horizon` | `5.0` | seconds the motion is extrapolated for; longer TTCs are none |
-| `criticality.ttc.time_step` | `0.1` | seconds between the extrapolated positions, which are refined by bisection |
-| `criticality.ttc.exposure_threshold` | `3.0` | TTC* in seconds below which the ego vehicle is exposed for TET and TIT |
-| `criticality.thw.corridor_width` | `3.5` | width in meters of the corridor along the path ahead of the ego vehicle, used without map |
-| `criticality.thw.max_distance` | `200.0` | distance in meters ahead of the ego vehicle up to which road users are followed |
-| `criticality.thw.min_speed` | `0.5` | speed in `m/s` of the ego vehicle below which it has no time headway |
-| `criticality.pet.cell_size` | `0.5` | edge length in meters of the cells of the ground grid |
-| `criticality.pet.time_step` | `0.1` | seconds between the resampled poses of the trajectories, the resolution of the PET |
-| `criticality.pet.max_pet` | `10.0` | PET in seconds up to which a road user encounters the ego vehicle |
+| `collision.standstill_speed` | `0.1` | speed in `m/s` below which a road user stands still |
+| `ttc.horizon` | `5.0` | seconds the motion is extrapolated for; longer TTCs are none |
+| `ttc.time_step` | `0.1` | seconds between the extrapolated positions, which are refined by bisection |
+| `ttc.exposure_threshold` | `3.0` | TTC* in seconds below which the ego vehicle is exposed for TET and TIT |
+| `thw.corridor_width` | `3.5` | width in meters of the corridor along the path ahead of the ego vehicle, used without map |
+| `thw.max_distance` | `200.0` | distance in meters ahead of the ego vehicle up to which road users are followed |
+| `thw.min_speed` | `0.5` | speed in `m/s` of the ego vehicle below which it has no time headway |
+| `pet.cell_size` | `0.5` | edge length in meters of the cells of the ground grid |
+| `pet.time_step` | `0.1` | seconds between the resampled poses of the trajectories, the resolution of the PET |
+| `pet.max_pet` | `10.0` | PET in seconds up to which a road user encounters the ego vehicle |
 
 <details>
 <summary>Output metrics</summary>
 
 | Metric | Description |
 | - | - |
-| `criticality.collision._value_` | Number of collisions of the ego vehicle. |
-| `criticality.collision.{at_fault,not_at_fault,undetermined}` | Number of collisions the ego vehicle is at fault for, is not at fault for, and of which this is undetermined, i.e. lateral collisions without map. |
-| `criticality.collision.types.{type}` | Number of collisions per type: `active_front`, `active_rear`, `active_lateral`, `stopped_ego`, `stopped_object`. |
-| `criticality.collision.max_relative_speed` | Largest relative speed of the colliding road users at the first sample of a collision in `m/s`. |
-| `criticality.ttc._value_` | Smallest time to collision of the ego vehicle in seconds, `null` if no road user ever collides within the horizon. |
-| `criticality.ttc.share` | Share of the samples with velocity of the ego vehicle that have a time to collision within the horizon. |
-| `criticality.ttc.time_exposed` | Time exposed (TET) in seconds: time the TTC of the ego vehicle stays below `exposure_threshold`. |
-| `criticality.ttc.time_integrated` | Time integrated (TIT) in `s²`: `TTC* − TTC` integrated over the time exposed. |
-| `criticality.thw._value_`, `criticality.thw.mean` | Smallest and mean time headway of the ego vehicle in seconds over the samples in which it follows a road user. |
-| `criticality.thw.share` | Share of the samples in which the ego vehicle follows a road user. |
-| `criticality.thw.sources` | Whether the followed road users were found along the `lanes` of the map or in the `corridor`. |
-| `criticality.pet._value_` | Smallest post-encroachment time of all encounters in seconds, `null` without encounter. |
-| `criticality.pet.num_encounters` | Number of encounters, i.e. road users passing a spot of the ego vehicle within `max_pet`. |
-| `criticality.pet.ego_first` | Number of encounters in which the ego vehicle passed the spot first. |
-| `criticality.pet.types.{type}._value_`, `criticality.pet.types.{type}.num_encounters` | Smallest PET and number of encounters per conflict type: `rear_end`, `lane_change`, `crossing`. |
+| `collision._value_` | Number of collisions of the ego vehicle. |
+| `collision.{at_fault,not_at_fault,undetermined}` | Number of collisions the ego vehicle is at fault for, is not at fault for, and of which this is undetermined, i.e. lateral collisions without map. |
+| `collision.types.{type}` | Number of collisions per type: `active_front`, `active_rear`, `active_lateral`, `stopped_ego`, `stopped_object`. |
+| `collision.max_relative_speed` | Largest relative speed of the colliding road users at the first sample of a collision in `m/s`. |
+| `ttc._value_` | Smallest time to collision of the ego vehicle in seconds, `null` if no road user ever collides within the horizon. |
+| `ttc.share` | Share of the samples with velocity of the ego vehicle that have a time to collision within the horizon. |
+| `ttc.time_exposed` | Time exposed (TET) in seconds: time the TTC of the ego vehicle stays below `exposure_threshold`. |
+| `ttc.time_integrated` | Time integrated (TIT) in `s²`: `TTC* − TTC` integrated over the time exposed. |
+| `thw._value_`, `thw.mean` | Smallest and mean time headway of the ego vehicle in seconds over the samples in which it follows a road user. |
+| `thw.share` | Share of the samples in which the ego vehicle follows a road user. |
+| `thw.sources` | Whether the followed road users were found along the `lanes` of the map or in the `corridor`. |
+| `pet._value_` | Smallest post-encroachment time of all encounters in seconds, `null` without encounter. |
+| `pet.num_encounters` | Number of encounters, i.e. road users passing a spot of the ego vehicle within `max_pet`. |
+| `pet.ego_first` | Number of encounters in which the ego vehicle passed the spot first. |
+| `pet.types.{type}._value_`, `pet.types.{type}.num_encounters` | Smallest PET and number of encounters per conflict type: `rear_end`, `lane_change`, `crossing`. |
 
 </details>
 
@@ -326,22 +327,22 @@ Whether the ego vehicle stays on the road, drives in the direction of travel and
 
 | Entry | Default | Description |
 | --- | --- | --- |
-| `rule_compliance.drivable_area.tolerance` | `0.3` | distance in meters a corner of the footprint may lie outside the drivable area without violating it, as in nuPlan |
-| `rule_compliance.driving_direction.min_speed` | `0.1` | speed in `m/s` below which the ego vehicle stands still and drives in no direction |
-| `rule_compliance.speed_limit.tolerance` | `0.0` | speed in `m/s` by which the speed limit may be exceeded without violating it |
+| `drivable_area.tolerance` | `0.3` | distance in meters a corner of the footprint may lie outside the drivable area without violating it, as in nuPlan |
+| `driving_direction.min_speed` | `0.1` | speed in `m/s` below which the ego vehicle stands still and drives in no direction |
+| `speed_limit.tolerance` | `0.0` | speed in `m/s` by which the speed limit may be exceeded without violating it |
 
 <details>
 <summary>Output metrics</summary>
 
 | Metric | Description |
 | - | - |
-| `rule_compliance.{rule}._value_` | Share of the samples at which the rule could be checked that violate it, `null` if it could never be checked; per rule: `drivable_area`, `driving_direction`, `speed_limit`. |
-| `rule_compliance.{rule}.time` | Time of the violations of the rule in seconds. |
-| `rule_compliance.{rule}.num_violations` | Number of violations of the rule, consecutive violating samples counting once. |
-| `rule_compliance.{rule}.coverage` | Share of the samples at which the rule could be checked, i.e. with map and the ego vehicle in a drivable lanelet. |
-| `rule_compliance.drivable_area.max_distance` | Largest distance of a corner of the footprint outside the drivable area in meters. |
-| `rule_compliance.driving_direction.distance` | Distance driven against the direction of travel in meters. |
-| `rule_compliance.speed_limit.max_excess` | Largest speed above the speed limit in `m/s`, zero if it is never exceeded. |
+| `{rule}._value_` | Share of the samples at which the rule could be checked that violate it, `null` if it could never be checked; per rule: `drivable_area`, `driving_direction`, `speed_limit`. |
+| `{rule}.time` | Time of the violations of the rule in seconds. |
+| `{rule}.num_violations` | Number of violations of the rule, consecutive violating samples counting once. |
+| `{rule}.coverage` | Share of the samples at which the rule could be checked, i.e. with map and the ego vehicle in a drivable lanelet. |
+| `drivable_area.max_distance` | Largest distance of a corner of the footprint outside the drivable area in meters. |
+| `driving_direction.distance` | Distance driven against the direction of travel in meters. |
+| `speed_limit.max_excess` | Largest speed above the speed limit in `m/s`, zero if it is never exceeded. |
 
 </details>
 
@@ -353,22 +354,22 @@ Whether the ego vehicle gets ahead: the distance it drives, and its progress alo
 
 | Entry | Default | Description |
 | --- | --- | --- |
-| `progress.distance.standstill_speed` | `0.1` | speed in `m/s` below which the ego vehicle stands still |
-| `progress.route.goal_tolerance` | `3.0` | distance in meters along the route within which the destination counts as reached, and by which it may move while it is still the same |
+| `distance.standstill_speed` | `0.1` | speed in `m/s` below which the ego vehicle stands still |
+| `route.goal_tolerance` | `3.0` | distance in meters along the route within which the destination counts as reached, and by which it may move while it is still the same |
 
 <details>
 <summary>Output metrics</summary>
 
 | Metric | Description |
 | - | - |
-| `progress.distance._value_` | Distance the ego vehicle drives in meters, the length of the path through its positions over each sequence. |
-| `progress.distance.mean_speed` | Distance driven over the duration of the sequences in `m/s`. |
-| `progress.distance.standstill_time`, `progress.distance.standstill_share` | Time in seconds and share of the samples with velocity at which the ego vehicle stands still. |
-| `progress.route._value_` | Completion of the routes whose destination is known, averaged over them, `null` without such a route. |
-| `progress.route.distance`, `progress.route.remaining_distance` | Progress along the routes and distance remaining to their known destinations at their last samples in meters, summed over the routes. |
-| `progress.route.goals_reached`, `progress.route.num_routes` | Number of routes whose destination the ego vehicle reached, and of all routes. |
-| `progress.route.max_lateral_distance` | Largest distance of the ego vehicle from the path of its route in meters, e.g. while driving in another lane than the suggested one. |
-| `progress.route.coverage` | Share of the samples with route. |
+| `distance._value_` | Distance the ego vehicle drives in meters, the length of the path through its positions over each sequence. |
+| `distance.mean_speed` | Distance driven over the duration of the sequences in `m/s`. |
+| `distance.standstill_time`, `distance.standstill_share` | Time in seconds and share of the samples with velocity at which the ego vehicle stands still. |
+| `route._value_` | Completion of the routes whose destination is known, averaged over them, `null` without such a route. |
+| `route.distance`, `route.remaining_distance` | Progress along the routes and distance remaining to their known destinations at their last samples in meters, summed over the routes. |
+| `route.goals_reached`, `route.num_routes` | Number of routes whose destination the ego vehicle reached, and of all routes. |
+| `route.max_lateral_distance` | Largest distance of the ego vehicle from the path of its route in meters, e.g. while driving in another lane than the suggested one. |
+| `route.coverage` | Share of the samples with route. |
 
 </details>
 
@@ -383,14 +384,14 @@ How smoothly the ego vehicle drives: its acceleration, its jerk and its yaw rate
 
 | Metric | Description |
 | - | - |
-| `comfort.acceleration._value_` | Largest magnitude of the acceleration of the ego vehicle in `m/s²`. |
-| `comfort.acceleration.longitudinal.{max,min,rms}` | Strongest longitudinal acceleration, strongest deceleration (negative) and root mean square of the longitudinal acceleration in `m/s²`. |
-| `comfort.acceleration.lateral.{max_abs,rms}` | Largest absolute and root mean square lateral acceleration in `m/s²`. |
-| `comfort.acceleration.{longitudinal,lateral}.sources` | Whether the acceleration was read from the ego state (`state`) or derived (`derived`). |
-| `comfort.jerk._value_` | Largest magnitude of the jerk of the ego vehicle in `m/s³`. |
-| `comfort.jerk.{longitudinal,lateral}.{max_abs,rms}` | Largest absolute and root mean square jerk along and across the heading in `m/s³`. |
-| `comfort.yaw_rate._value_`, `comfort.yaw_rate.rms` | Largest absolute and root mean square yaw rate in `rad/s`. |
-| `comfort.yaw_rate.sources` | Whether the yaw rate was read from the ego state (`state`) or derived (`derived`). |
+| `acceleration._value_` | Largest magnitude of the acceleration of the ego vehicle in `m/s²`. |
+| `acceleration.longitudinal.{max,min,rms}` | Strongest longitudinal acceleration, strongest deceleration (negative) and root mean square of the longitudinal acceleration in `m/s²`. |
+| `acceleration.lateral.{max_abs,rms}` | Largest absolute and root mean square lateral acceleration in `m/s²`. |
+| `acceleration.{longitudinal,lateral}.sources` | Whether the acceleration was read from the ego state (`state`) or derived (`derived`). |
+| `jerk._value_` | Largest magnitude of the jerk of the ego vehicle in `m/s³`. |
+| `jerk.{longitudinal,lateral}.{max_abs,rms}` | Largest absolute and root mean square jerk along and across the heading in `m/s³`. |
+| `yaw_rate._value_`, `yaw_rate.rms` | Largest absolute and root mean square yaw rate in `rad/s`. |
+| `yaw_rate.sources` | Whether the yaw rate was read from the ego state (`state`) or derived (`derived`). |
 
 </details>
 
@@ -416,8 +417,8 @@ To contribute a new evaluation for a dataset or evaluation protocol:
    - `aggregate(aggregation)`: aggregates the records of the samples of a scene or of the whole evaluation (`aggregation.records(self.name)`) into a dictionary that holds the value of the metric under `_value_` next to its sub-metrics. A metric that depends on the order of the samples, e.g. a jerk, aggregates each contiguous sequence of samples (`aggregation.sequences()`), see [Sequences of samples](#sequences-of-samples).
    - optionally `requires()`: the metrics whose results the metric builds on, which are computed first and passed in `aggregation.results`, e.g. a score combining other metrics. A metric that only provides data for others is `INTERNAL`: it is computed whenever another metric requires it, but neither selectable nor reported.
    - optionally `visualization_outputs()` and `visualize_sample(sample)` to publish a per-sample visualization for RViz.
-2. Create the evaluation class in the package of its area, e.g. [autonomy_evaluation/evaluations/perception/](../autonomy_evaluation/autonomy_evaluation/evaluations/perception/), that inherits from `Evaluation`, sets `AREA` to that area (`perception`, `planning` or `driving_behavior`) and returns its metrics from `metrics()`, in the order they are reported in. Related metrics can be grouped with `MetricGroup(name, metrics)`, so that they are selected, configured and reported together under the name of the group; this way, several evaluations of an area that read the same topics run in one node, like `criticality` and `comfort` of `driving_behavior`. Declare the configuration shared by all metrics, e.g. per-class ranges, in `default_config()`, and set `HEADLINE_METRIC` to the metric whose value the evaluation reports as its own under `_value_`, if it has one. Keep static lookup tables (e.g. class names) as module-level `_CONSTANT_NAME` constants.
-3. Register the evaluation in `EVALUATIONS` of [registry.py](../autonomy_evaluation/autonomy_evaluation/evaluations/registry.py) so it can be selected via the `evaluation:=<name>` launch argument, add comprehensive tests in the same area of [tests/evaluations/](../autonomy_evaluation/tests/evaluations/) following existing test patterns, and update the documentation with evaluation details, metrics table, configuration, dataset requirements, and the topics it reads.
+2. Create the evaluation class in the package of its area, e.g. [autonomy_evaluation/evaluations/perception/](../autonomy_evaluation/autonomy_evaluation/evaluations/perception/), that inherits from `Evaluation`, sets `AREA` to that area (`perception`, `planning` or `driving_behavior`) and returns its metrics from `metrics()`, in the order they are reported in. Related metrics can be grouped with `MetricGroup(name, metrics)`, so that they are selected, configured and reported together under the name of the group. Evaluations of an area that share more than their area, e.g. the position of the ego vehicle splitting their sequences, inherit it from a base class of the area, e.g. `DrivingBehaviorEvaluation`. Declare the configuration shared by all metrics, e.g. per-class ranges, in `default_config()`, and set `HEADLINE_METRIC` to the metric whose value the evaluation reports as its own under `_value_`, if it has one. Keep static lookup tables (e.g. class names) as module-level `_CONSTANT_NAME` constants.
+3. Register the evaluation in `EVALUATIONS` and under its area in `AREA_EVALUATIONS` of [registry.py](../autonomy_evaluation/autonomy_evaluation/evaluations/registry.py), so it can be selected via the `evaluation:=<name>` launch argument and runs with the other evaluations of its area, add comprehensive tests in the same area of [tests/evaluations/](../autonomy_evaluation/tests/evaluations/) following existing test patterns, and update the documentation with evaluation details, metrics table, configuration, dataset requirements, and the topics it reads.
 4. Create a [Pull Request](https://github.com/thinking-cars/autonomy_evaluation/pulls) on GitHub and wait for maintainer feedback.
 
 An evaluation that is specific to a system under test can also stay in a package of its own. The node loads it by its module and class, e.g. `evaluation:=my_package.evaluations:MyPlannerEvaluation`, as long as the module is importable in the environment of the node:
@@ -475,8 +476,10 @@ Metrics only measure, e.g. the smallest time to collision of the ego vehicle; wh
 ```yaml
 /**:
   ros__parameters:
-    driving_behavior:
-      limits: ["criticality.collision.at_fault == 0", "criticality.ttc >= 1.5", "rule_compliance.speed_limit.max_excess <= 1.0"]
+    criticality:
+      limits: ["collision.at_fault == 0", "ttc >= 1.5"]
+    rule_compliance:
+      limits: ["speed_limit.max_excess <= 1.0"]
     object_detection_3d:
       limits: ["detection_score >= 0.5", "ap.dist_2.0 >= 0.6"]
 ```
@@ -493,7 +496,7 @@ The node logs whether the metrics over all samples passed their limits once the 
 
 ### Sequences of samples
 
-Most metrics treat every sample on its own, e.g. the average precision of a detector. Others depend on the order of the samples and the time between them, e.g. the jerk of the ego vehicle or the time between two road users passing the same spot. They are computed on contiguous sequences of samples. A sample is evaluated once all its messages have arrived, so it may be recorded after a later one, e.g. when its messages are matched within `sync_tolerance` and one arrives late; the samples of a scene are therefore put in stamp order, unless a stamp lies more than `max_sample_interval` seconds before the latest one, e.g. when a simulation restarts. Two consecutive samples in this order belong to the same sequence if they belong to the same scene, the later one is stamped after the earlier one, they are at most `max_sample_interval` seconds apart, and, for an evaluation that reports a position per sample, the position does not jump faster than `max_jump_speed`, e.g. when a simulation teleports the ego vehicle to the start of a scenario. The driving behavior evaluation reports the position of the ego vehicle, the trajectory deviation that of the ego vehicle of `reference`, else of `evaluated`, whichever is read as `EgoData`. Within a sequence, an interval of more than 1.5 times the sampling period is a gap, i.e. samples are missing, e.g. because the system under test skipped them or the evaluation did not keep up with a live system.
+Most metrics treat every sample on its own, e.g. the average precision of a detector. Others depend on the order of the samples and the time between them, e.g. the jerk of the ego vehicle or the time between two road users passing the same spot. They are computed on contiguous sequences of samples. A sample is evaluated once all its messages have arrived, so it may be recorded after a later one, e.g. when its messages are matched within `sync_tolerance` and one arrives late; the samples of a scene are therefore put in stamp order, unless a stamp lies more than `max_sample_interval` seconds before the latest one, e.g. when a simulation restarts. Two consecutive samples in this order belong to the same sequence if they belong to the same scene, the later one is stamped after the earlier one, they are at most `max_sample_interval` seconds apart, and, for an evaluation that reports a position per sample, the position does not jump faster than `max_jump_speed`, e.g. when a simulation teleports the ego vehicle to the start of a scenario. The evaluations of the driving behavior report the position of the ego vehicle, the trajectory deviation that of the ego vehicle of `reference`, else of `evaluated`, whichever is read as `EgoData`. Within a sequence, an interval of more than 1.5 times the sampling period is a gap, i.e. samples are missing, e.g. because the system under test skipped them or the evaluation did not keep up with a live system.
 
 The results describe how regularly the samples were evaluated under `sampling`, over all samples and per scene:
 

@@ -1,7 +1,7 @@
 # Copyright Thinking Cars GmbH
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the criticality metrics of the driving behavior evaluation: collision, time to collision and time headway.
+"""Tests for the criticality evaluation of the driving behavior: collision, time to collision and time headway.
 
 Cars of 4 m length and 2 m width drive scenarios simple enough to compute the expected values by
 hand, e.g. the ego vehicle approaching a standing car at 10 m/s or following a car around a bend.
@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 
 import pytest
-from autonomy_evaluation.evaluations.driving_behavior.DrivingBehavior import DrivingBehavior
+from autonomy_evaluation.evaluations.driving_behavior.criticality.Criticality import Criticality
 from tests.evaluations.driving_behavior.messages import ego_data, object_list, road_user
 from tests.utils.lanelet2_maps import bend, junction, two_lane_road
 
@@ -21,8 +21,8 @@ _PERIOD = 0.1
 
 def _evaluate(samples, metrics=None, config=None, scene_ids=None, lanelet2_map=None) -> dict:
     """Record ``(stamp, ego_data keyword arguments, road users)`` samples, with the map if given, and aggregate them."""
-    evaluation = DrivingBehavior()
-    evaluation.configure({"metrics": metrics or ["criticality"], **(config or {})})
+    evaluation = Criticality()
+    evaluation.configure({**({"metrics": metrics} if metrics else {}), **(config or {})})
     for index, (stamp, ego, road_users) in enumerate(samples):
         evaluation.record_sample(
             sample_id=str(index),
@@ -32,7 +32,7 @@ def _evaluate(samples, metrics=None, config=None, scene_ids=None, lanelet2_map=N
             objects=object_list(road_users, stamp=stamp),
             map=lanelet2_map,
         )
-    return evaluation.finalize()["metrics"]["criticality"]
+    return evaluation.finalize()["metrics"]
 
 
 def _collision(ego_x, ego_speed, other_x, other_y=0.0, other_yaw=0.0, other_speed=0.0) -> list:
@@ -70,7 +70,7 @@ class TestCollision:
     )
     def test_classifies_collisions_like_nuplan(self, samples, collision_type, at_fault):
         """Whether the ego vehicle is at fault follows from who stood still and which side was hit."""
-        collision = _evaluate(samples, metrics=["criticality.collision"])["collision"]
+        collision = _evaluate(samples, metrics=["collision"])["collision"]
 
         assert collision["_value_"] == 1
         assert collision["types"][collision_type] == 1
@@ -135,7 +135,7 @@ def test_collision_that_starts_touching_is_classified_by_its_first_overlap():
         (0.1, {"x": 7.0, **ego}, [road_user(1, 10.5, 0.0, **other)]),  # overlapping by 0.5 m
     ]
 
-    collision = _evaluate(samples, metrics=["criticality.collision"])["collision"]
+    collision = _evaluate(samples, metrics=["collision"])["collision"]
 
     assert collision["types"]["active_front"] == 1
     assert (collision["_value_"], collision["at_fault"]) == (1, 1)
@@ -158,7 +158,7 @@ class TestTimeToCollision:
 
     def test_exposure_threshold_is_configurable(self):
         """Below a TTC* of 1.5 s, a TTC of 2 s is no exposure."""
-        ttc = _evaluate(_standing_car_ahead(gap=20.0), config={"criticality": {"ttc": {"exposure_threshold": 1.5}}})["ttc"]
+        ttc = _evaluate(_standing_car_ahead(gap=20.0), config={"ttc": {"exposure_threshold": 1.5}})["ttc"]
 
         assert ttc["time_exposed"] == 0.0
         assert ttc["time_integrated"] == 0.0
@@ -168,7 +168,7 @@ class TestTimeToCollision:
         samples = _standing_car_ahead(gap=46.0)
 
         assert _evaluate(samples)["ttc"]["_value_"] == pytest.approx(4.6, abs=1e-3)
-        ttc = _evaluate(samples, config={"criticality": {"ttc": {"horizon": 3.0}}})["ttc"]
+        ttc = _evaluate(samples, config={"ttc": {"horizon": 3.0}})["ttc"]
         assert ttc["_value_"] is None
         assert ttc["share"] == 0.0
 
@@ -297,9 +297,7 @@ class TestPostEncroachmentTime:
         samples = _drive(20.0, [far_ahead], period=1.0)
 
         assert _evaluate(samples)["pet"]["num_encounters"] == 0
-        assert _evaluate(samples, config={"criticality": {"pet": {"max_pet": 20.0}}})["pet"]["_value_"] == pytest.approx(
-            14.6, abs=0.1
-        )
+        assert _evaluate(samples, config={"pet": {"max_pet": 20.0}})["pet"]["_value_"] == pytest.approx(14.6, abs=0.1)
 
     def test_road_users_of_different_scenes_never_encounter(self):
         """The crossing car enters the intersection in a scene of its own, which is a sequence of its own."""
@@ -314,7 +312,7 @@ class TestVisualization:
 
     def test_publishes_the_colliding_approaching_and_followed_road_users(self):
         """Criticality metrics with a per-sample outcome publish the road users behind it, in the frame of the ego vehicle."""
-        evaluation = DrivingBehavior()
+        evaluation = Criticality()
         messages = {
             "ego_data": ego_data(vel_lon=10.0, yaw_rate=0.0),
             "objects": object_list(
@@ -336,9 +334,9 @@ class TestVisualization:
         assert visualization["lead_vehicle"].header.frame_id == "map"
 
     def test_publishes_the_outputs_of_the_computed_metrics_only(self):
-        """Comfort metrics have no per-sample outcome to publish."""
-        evaluation = DrivingBehavior()
-        evaluation.configure({"metrics": ["comfort", "criticality.thw"]})
+        """With the time headway as the only computed metric, only the followed road user is published."""
+        evaluation = Criticality()
+        evaluation.configure({"metrics": ["thw"]})
 
         assert list(evaluation.visualization_outputs()) == ["lead_vehicle"]
 
@@ -409,7 +407,7 @@ class TestLateralCollisionFault:
             (0.0, {"x": 50.0, "y": ego_y, "vel_lon": 10.0}, [road_user(1, 50.0, ego_y + 5.0, vel_lon=10.0)]),
             (1.0, {"x": 60.0, "y": ego_y, "vel_lon": 10.0}, [road_user(1, 60.0, ego_y + 1.8, vel_lon=10.0)]),
         ]
-        return _evaluate(samples, metrics=["criticality.collision"], lanelet2_map=lanelet2_map)["collision"]
+        return _evaluate(samples, metrics=["collision"], lanelet2_map=lanelet2_map)["collision"]
 
     def test_ego_vehicle_in_its_lane_is_not_at_fault(self):
         """A car changing into the lane of the ego vehicle causes the collision."""
@@ -442,8 +440,7 @@ class TestCriticalitySelection:
 
     def test_criticality_reads_the_objects_as_context(self):
         """The other road users are needed to evaluate the ego vehicle, but not evaluated themselves."""
-        evaluation = DrivingBehavior()
-        evaluation.configure({"metrics": ["criticality"]})
+        evaluation = Criticality()
 
         inputs = evaluation.inputs()
 
@@ -455,6 +452,6 @@ class TestCriticalitySelection:
         # the map is no topic, but context the node passes with every sample, and the metrics fall back to heuristics without
         assert inputs["map"].static and inputs["map"].optional
 
-    def test_all_groups_are_selected_by_default(self):
-        """By default, the driving behavior evaluation computes its criticality, rule compliance, progress and comfort."""
-        assert DrivingBehavior().config["metrics"] == ["criticality", "rule_compliance", "progress", "comfort"]
+    def test_all_metrics_are_selected_by_default(self):
+        """By default, the criticality evaluation computes the collision, the time to collision, the time headway and the PET."""
+        assert Criticality().config["metrics"] == ["collision", "ttc", "thw", "pet"]

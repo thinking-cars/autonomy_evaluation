@@ -1,7 +1,7 @@
 # Copyright Thinking Cars GmbH
 # SPDX-License-Identifier: Apache-2.0
 
-"""Comfort metrics of the driving behavior evaluation: how smoothly the ego vehicle drives.
+"""Metrics of the comfort evaluation: how smoothly the ego vehicle drives.
 
 All metrics read the ``ego_data`` of the ego vehicle only and build on the
 motion of the ego vehicle over each contiguous sequence of samples, which the
@@ -24,19 +24,13 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from autonomy_evaluation.evaluations.driving_behavior.states import ego_state
-from autonomy_evaluation.evaluations.Metric import Aggregation, EVALUATED, Input, Metric, Sample
+from autonomy_evaluation.evaluations.driving_behavior.states import ego_inputs, ego_state
+from autonomy_evaluation.evaluations.Metric import Aggregation, Input, Metric, Sample
 from autonomy_evaluation.utils.PlanarUtils import PlanarUtils
-from perception_msgs.msg import EgoData
 
 # Source of a quantity read from the ego state, and of one derived from the samples by finite differences
 _STATE = "state"
 _DERIVED = "derived"
-
-
-def ego_inputs() -> Dict[str, Input]:
-    """Declare the input of the metrics of the ego vehicle: its evaluated ``ego_data``."""
-    return {"ego_data": Input(EgoData, EVALUATED)}
 
 
 class EgoMotion(Metric):

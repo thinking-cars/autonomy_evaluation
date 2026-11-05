@@ -1,7 +1,7 @@
 # Copyright Thinking Cars GmbH
 # SPDX-License-Identifier: Apache-2.0
 
-"""Rule compliance metrics of the driving behavior evaluation: whether the ego vehicle drives as the traffic rules allow.
+"""Metrics of the rule compliance evaluation: whether the ego vehicle drives as the traffic rules allow.
 
 All metrics read the evaluated ``ego_data`` of the ego vehicle and check it
 against the lanes of the Lanelet2 map of the current scene, the optional static

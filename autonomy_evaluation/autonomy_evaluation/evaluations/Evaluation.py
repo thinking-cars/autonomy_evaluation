@@ -146,7 +146,7 @@ class Evaluation(ABC):
         """Collect the metrics of the evaluation by their qualified names.
 
         The qualified name of a metric is its :attr:`~Metric.NAME`, prefixed
-        by the name of its group, e.g. ``criticality.ttc``.
+        by the name of its group if it belongs to one, e.g. ``<group>.<metric>``.
 
         Returns:
             Qualified name to metric, in the order of :meth:`metrics`.
@@ -736,6 +736,39 @@ class Evaluation(ABC):
         """Clear accumulated sample results."""
         self._sample_results.clear()
         self._last_sample = None
+
+
+def merged_inputs(evaluations: Sequence[Evaluation], available: bool = False) -> Dict[str, Input]:
+    """Merge the inputs of evaluations that run together, i.e. that are evaluated on the same samples.
+
+    Evaluations that run together read an input of the same name from the same
+    topic, so they have to declare it alike.
+
+    Args:
+        evaluations: Evaluations that run together.
+        available: Whether to merge the inputs of all metrics of the
+            evaluations (:meth:`Evaluation.available_inputs`) instead of those
+            of their computed metrics (:meth:`Evaluation.inputs`).
+
+    Returns:
+        Input name to input, in the order the evaluations declare them.
+
+    Raises:
+        ValueError: Two evaluations declare an input of the same name
+            differently, or the inputs of an evaluation are invalid.
+    """
+    inputs: Dict[str, Input] = {}
+    declared_by: Dict[str, str] = {}
+    for evaluation in evaluations:
+        for name, declared in (evaluation.available_inputs() if available else evaluation.inputs()).items():
+            if name in inputs and inputs[name] != declared:
+                raise ValueError(
+                    f"Evaluation '{declared_by[name]}' reads input '{name}' as {inputs[name]} and evaluation "
+                    f"'{evaluation.name}' as {declared}, so they cannot run together"
+                )
+            inputs.setdefault(name, declared)
+            declared_by.setdefault(name, evaluation.name)
+    return inputs
 
 
 def flatten_config(config: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:

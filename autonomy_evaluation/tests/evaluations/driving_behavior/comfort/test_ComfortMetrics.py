@@ -1,7 +1,7 @@
 # Copyright Thinking Cars GmbH
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the comfort metrics of the driving behavior evaluation: acceleration, jerk and yaw rate.
+"""Tests for the comfort evaluation of the driving behavior: acceleration, jerk and yaw rate.
 
 The ego vehicle drives analytically known motions, e.g. accelerating uniformly or driving a circle,
 sampled at 10 Hz, so that read and derived quantities can be checked against their exact values.
@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 
 import pytest
-from autonomy_evaluation.evaluations.driving_behavior.DrivingBehavior import DrivingBehavior
+from autonomy_evaluation.evaluations.driving_behavior.comfort.Comfort import Comfort
 from tests.evaluations.driving_behavior.messages import ego_data
 
 _PERIOD = 0.1
@@ -20,8 +20,8 @@ _PERIOD = 0.1
 
 def _evaluate(states, scene_ids=None, metrics=None) -> dict:
     """Record the ego states of consecutive samples, ``(stamp, ego_data keyword arguments)``, and aggregate them."""
-    evaluation = DrivingBehavior()
-    evaluation.configure({"metrics": metrics or ["comfort"]})
+    evaluation = Comfort()
+    evaluation.configure({"metrics": metrics} if metrics else {})
     for index, (stamp, state) in enumerate(states):
         scene_id = scene_ids[index] if scene_ids else None
         evaluation.record_sample(sample_id=str(index), scene_id=scene_id, stamp=stamp, ego_data=ego_data(stamp=stamp, **state))
@@ -44,7 +44,7 @@ class TestAcceleration:
 
     def test_reads_the_acceleration_of_the_ego_state(self):
         """An acceleration set in the ego state is taken as it is."""
-        acceleration = _evaluate(_uniform_acceleration(-3.0, with_state=True))["metrics"]["comfort"]["acceleration"]
+        acceleration = _evaluate(_uniform_acceleration(-3.0, with_state=True))["metrics"]["acceleration"]
 
         assert acceleration["longitudinal"] == {"max": -3.0, "min": -3.0, "rms": 3.0, "sources": ["state"]}
         # the lateral acceleration is not set, so it is derived: v_lat stays 0 and the yaw rate is 0
@@ -52,7 +52,7 @@ class TestAcceleration:
 
     def test_derives_the_acceleration_from_the_velocity(self):
         """Without acceleration in the ego state, it is the time derivative of the velocity."""
-        acceleration = _evaluate(_uniform_acceleration(2.0, with_state=False))["metrics"]["comfort"]["acceleration"]
+        acceleration = _evaluate(_uniform_acceleration(2.0, with_state=False))["metrics"]["acceleration"]
 
         assert acceleration["longitudinal"]["max"] == pytest.approx(2.0)
         assert acceleration["longitudinal"]["min"] == pytest.approx(2.0)
@@ -65,7 +65,7 @@ class TestAcceleration:
             for index in range(20)
         ]
 
-        acceleration = _evaluate(states)["metrics"]["comfort"]["acceleration"]
+        acceleration = _evaluate(states)["metrics"]["acceleration"]
 
         assert acceleration["lateral"]["max_abs"] == pytest.approx(2.0)
         assert acceleration["longitudinal"]["max"] == pytest.approx(0.0, abs=1e-9)
@@ -75,7 +75,7 @@ class TestAcceleration:
         """Braking while turning accelerates by the magnitude of both components."""
         states = [(index * _PERIOD, {"vel_lon": 10.0, "acc_lon": -3.0, "acc_lat": 4.0}) for index in range(5)]
 
-        assert _evaluate(states)["metrics"]["comfort"]["acceleration"]["_value_"] == pytest.approx(5.0)
+        assert _evaluate(states)["metrics"]["acceleration"]["_value_"] == pytest.approx(5.0)
 
     def test_acceleration_is_not_derived_across_scenes(self):
         """The velocity jumps between two scenes, which is no acceleration, as the scenes are no sequence."""
@@ -83,13 +83,13 @@ class TestAcceleration:
             ((index + 5) * _PERIOD, {"vel_lon": 30.0, "yaw_rate": 0.0}) for index in range(5)
         ]
 
-        acceleration = _evaluate(states, scene_ids=["a"] * 5 + ["b"] * 5)["metrics"]["comfort"]["acceleration"]
+        acceleration = _evaluate(states, scene_ids=["a"] * 5 + ["b"] * 5)["metrics"]["acceleration"]
 
         assert acceleration["longitudinal"]["max"] == pytest.approx(0.0)
 
     def test_acceleration_without_velocity_is_unavailable(self):
         """Without velocity and acceleration, nothing can be derived."""
-        acceleration = _evaluate([(index * _PERIOD, {}) for index in range(5)])["metrics"]["comfort"]["acceleration"]
+        acceleration = _evaluate([(index * _PERIOD, {}) for index in range(5)])["metrics"]["acceleration"]
 
         assert acceleration == {
             "_value_": None,
@@ -105,7 +105,7 @@ class TestJerk:
         """An acceleration rising by 1 m/s² per second is a jerk of 1 m/s³."""
         states = [(index * _PERIOD, {"vel_lon": 10.0, "acc_lon": index * _PERIOD, "acc_lat": 0.0}) for index in range(20)]
 
-        jerk = _evaluate(states)["metrics"]["comfort"]["jerk"]
+        jerk = _evaluate(states)["metrics"]["jerk"]
 
         assert jerk["longitudinal"]["max_abs"] == pytest.approx(1.0)
         assert jerk["lateral"]["max_abs"] == pytest.approx(0.0)
@@ -115,7 +115,7 @@ class TestJerk:
         """Samples of different scenes are no sequence, so no derivative is known."""
         states = [(index * _PERIOD, {"vel_lon": 10.0, "acc_lon": 1.0}) for index in range(3)]
 
-        jerk = _evaluate(states, scene_ids=["a", "b", "c"])["metrics"]["comfort"]["jerk"]
+        jerk = _evaluate(states, scene_ids=["a", "b", "c"])["metrics"]["jerk"]
 
         assert jerk["_value_"] is None
 
@@ -127,7 +127,7 @@ class TestYawRate:
         """A yaw rate set in the ego state is taken as it is."""
         states = [(index * _PERIOD, {"vel_lon": 10.0, "yaw_rate": -0.3}) for index in range(5)]
 
-        yaw_rate = _evaluate(states)["metrics"]["comfort"]["yaw_rate"]
+        yaw_rate = _evaluate(states)["metrics"]["yaw_rate"]
 
         assert yaw_rate == {"_value_": 0.3, "rms": pytest.approx(0.3), "sources": ["state"]}
 
@@ -135,7 +135,7 @@ class TestYawRate:
         """Without yaw rate in the ego state, it is the time derivative of the unwrapped yaw."""
         states = [(index * _PERIOD, {"yaw": math.remainder(3.0 + 0.5 * index * _PERIOD, 2.0 * math.pi)}) for index in range(10)]
 
-        yaw_rate = _evaluate(states)["metrics"]["comfort"]["yaw_rate"]
+        yaw_rate = _evaluate(states)["metrics"]["yaw_rate"]
 
         assert yaw_rate["_value_"] == pytest.approx(0.5)
         assert yaw_rate["sources"] == ["derived"]
@@ -146,15 +146,14 @@ class TestComfortSelection:
 
     def test_comfort_metrics_read_the_ego_vehicle_only(self):
         """The comfort of the ego vehicle needs no other road users."""
-        evaluation = DrivingBehavior()
-        evaluation.configure({"metrics": ["comfort"]})
+        evaluation = Comfort()
 
         assert list(evaluation.inputs()) == ["ego_data"]
         assert evaluation.inputs()["ego_data"].role == "evaluated"
 
     def test_single_comfort_metric(self):
-        """A single comfort metric is selected as 'comfort.<metric>', building on the internal motion of the ego vehicle."""
-        evaluation = DrivingBehavior()
-        evaluation.configure({"metrics": ["comfort.jerk"]})
+        """A single comfort metric is selected by its name, building on the internal motion of the ego vehicle."""
+        evaluation = Comfort()
+        evaluation.configure({"metrics": ["jerk"]})
 
-        assert list(evaluation.computed_metrics()) == ["ego_motion", "comfort.jerk"]
+        assert list(evaluation.computed_metrics()) == ["ego_motion", "jerk"]
