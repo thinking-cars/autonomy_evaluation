@@ -319,9 +319,8 @@ class AutonomyEvaluation(Node):
         self.results_path = self.declare_and_load_parameter(
             name="results_path",
             param_type=rclpy.Parameter.Type.STRING,
-            description=f"path of the JSON file the results of an evaluation are written to, in which "
-            f"'{RESULTS_PATH_PLACEHOLDER}' is replaced by the name of the evaluation, as required to run several; results "
-            "are only logged if empty",
+            description="path of the JSON file the results of an evaluation are written to, in which '{evaluation}' is "
+            "replaced by the name of the evaluation, as required to run several; results are only logged if empty",
             default="",
         )
 
