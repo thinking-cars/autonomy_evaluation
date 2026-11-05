@@ -1,3 +1,5 @@
+# All upstream repositories, as the .repos files of the repositories below are not imported (see
+# .github/workflows/docker-ros.yml).
 repositories:
   # only needed for the autonomy_datasets_msgs package, which carries the service to request samples
   # and the dataset meta information that perception_msgs/Object cannot express
@@ -15,3 +17,9 @@ repositories:
     type: git
     url: https://github.com/ika-rwth-aachen/planning_interfaces.git
     version: v1.2.0
+  # needed by perception_msgs_rviz_plugins, which shows the objects in RViz; the version autonomy_datasets uses, whose
+  # .repos names it until https://github.com/teamspatzenhirn/rviz_2d_overlay_plugins/issues/27 is solved
+  rviz_2d_overlay_plugins:
+    type: git
+    url: https://github.com/teamspatzenhirn/rviz_2d_overlay_plugins.git
+    version: 1.4.0
