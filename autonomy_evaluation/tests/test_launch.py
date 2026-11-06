@@ -164,3 +164,34 @@ class TestRvizConfig:
 
         assert (config_directory / "driving_behavior.rviz").is_file()
         assert (config_directory / "conf.rviz").is_file()
+
+
+class TestRviz:
+    """Tests opening RViz on the visualization, or leaving it to an RViz of its own, e.g. that of a simulation."""
+
+    @staticmethod
+    def _context(**launch_configurations: str):
+        """Create the launch context of the given launch arguments, the declared ones executed as by the launch."""
+        from launch import LaunchContext
+        from launch.actions import DeclareLaunchArgument
+
+        context = LaunchContext()
+        context.launch_configurations.update(launch_configurations)
+        for entity in _launch_module().generate_launch_description().entities:
+            if isinstance(entity, DeclareLaunchArgument):
+                entity.execute(context)
+        return context
+
+    def test_opens_rviz_on_the_visualization_by_default(self):
+        """Visualizing opens RViz, unless told otherwise."""
+        assert self._context(visualize="true").launch_configurations["rviz"] == "true"
+        assert self._context().launch_configurations["rviz"] == "false"
+
+    def test_publishes_the_visualization_without_rviz(self):
+        """Without RViz, only the node is launched, which publishes the visualization for an RViz of its own."""
+        context = self._context(evaluation="criticality", visualize="true", rviz="false")
+
+        nodes = _launch_module().launch_node(context, [])
+
+        assert len(nodes) == 1
+        assert context.launch_configurations["visualize"] == "true"

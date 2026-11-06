@@ -136,7 +136,8 @@ flowchart LR
 | `namespace` | `""` | node namespace |
 | `log_level` | `"info"` | ros logging level |
 | `use_sim_time` | `"true"` | use sim time |
-| `visualize` | `"false"` | publish the per-sample visualization of the evaluations and open RViz on it, with the first of `config/<selection>.rviz`, `config/<evaluation>.rviz` and `config/<area>.rviz` the package has, e.g. `driving_behavior.rviz`, and `config/conf.rviz` otherwise |
+| `visualize` | `"false"` | publish the per-sample visualization of the evaluations and, unless `rviz` is `false`, open RViz on it, with the first of `config/<selection>.rviz`, `config/<evaluation>.rviz` and `config/<area>.rviz` the package has, e.g. `driving_behavior.rviz`, and `config/conf.rviz` otherwise |
+| `rviz` | `LaunchConfiguration("visualize")` | open RViz on the visualization of the evaluations, as `visualize` by default; `false` only publishes it for an RViz of its own, e.g. that of a simulation showing it next to its own topics |
 | `sample_source` | `"dataset"` | 'dataset' requests the samples to evaluate from the dataset one after another; 'external' evaluates the samples published by others, e.g. by a simulation or the playback panel in RViz |
 | `shutdown_completes` | `"false"` | with sample source 'external', mark the results written when the node is stopped as complete, e.g. when an orchestration stops the evaluation together with the simulation at the end of each scenario |
 | `sync_tolerance` | `"0.0"` | seconds by which the stamps of the messages of a sample may differ (0 matches exact stamps only) |

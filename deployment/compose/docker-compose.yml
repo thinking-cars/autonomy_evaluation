@@ -15,6 +15,7 @@ services:
       EVALUATION: object_detection_3d
       CONFIG: ""
       VISUALIZE: false
+      RVIZ: ""
       SAMPLE_SOURCE: dataset
       SHUTDOWN_COMPLETES: false
       SYNC_TOLERANCE: 0.0
@@ -35,6 +36,7 @@ services:
           evaluation:=$${EVALUATION} \
           $${CONFIG:+config:=$${CONFIG}} \
           visualize:=$${VISUALIZE} \
+          $${RVIZ:+rviz:=$${RVIZ}} \
           sample_source:=$${SAMPLE_SOURCE} \
           shutdown_completes:=$${SHUTDOWN_COMPLETES} \
           sync_tolerance:=$${SYNC_TOLERANCE} \

@@ -10,7 +10,6 @@ from ament_index_python.packages import get_package_share_directory
 from autonomy_evaluation.evaluations import Evaluation, load_evaluations, merged_inputs
 from launch import LaunchContext, LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
-from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node, SetParameter
 from launch_ros.parameter_descriptions import ParameterValue
@@ -72,7 +71,7 @@ def launch_node(context: LaunchContext, remappings: list) -> list[Node]:
         remappings (list): remappings of the names other than the topics of the evaluation
 
     Returns:
-        list[Node]: node and, if visualizing, RViz to launch
+        list[Node]: node and, if opening RViz, RViz to launch
     """
     selection = LaunchConfiguration("evaluation").perform(context)
     evaluations = load_evaluations(selection)
@@ -101,6 +100,9 @@ def launch_node(context: LaunchContext, remappings: list) -> list[Node]:
         output="screen",
         emulate_tty=True,
     )
+    # the visualization may also be shown by an RViz of its own, e.g. that of a simulation, which then opens none here
+    if LaunchConfiguration("rviz").perform(context) != "true":
+        return [node]
     rviz = Node(
         package="rviz2",
         executable="rviz2",
@@ -109,7 +111,6 @@ def launch_node(context: LaunchContext, remappings: list) -> list[Node]:
             "-d",
             rviz_config(selection, evaluations, os.path.join(get_package_share_directory("autonomy_evaluation"), "config")),
         ],
-        condition=IfCondition(LaunchConfiguration("visualize")),
         output="screen",
     )
     return [node, rviz]
@@ -166,7 +167,14 @@ def generate_launch_description():
             "visualize",
             default_value="false",
             choices=["true", "false"],
-            description="publish the per-sample visualization of the evaluation and open RViz on it",
+            description="publish the per-sample visualization of the evaluation and, unless rviz is false, open RViz on it",
+        ),
+        DeclareLaunchArgument(
+            "rviz",
+            default_value=LaunchConfiguration("visualize"),
+            choices=["true", "false"],
+            description="open RViz on the visualization of the evaluation, as visualize by default; false only publishes it for "
+            "an RViz of its own, e.g. that of a simulation",
         ),
         DeclareLaunchArgument(
             "sample_source",
