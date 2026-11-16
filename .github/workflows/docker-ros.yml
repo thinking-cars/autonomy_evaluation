@@ -24,6 +24,9 @@ jobs:
           rmw-implementation: rmw_zenoh_cpp
           command: ros2 launch autonomy_evaluation autonomy_evaluation.launch.py
           enable-slim: false
+          # import only the repositories of .repos: the .repos files of autonomy_datasets and planning_interfaces
+          # name rviz_2d_overlay_plugins from different repositories, which a recursive import cannot clone both
+          enable-recursive-vcs-import: false
         env:
           TARGET_CMAKE_ARGS: -DCMAKE_EXPORT_COMPILE_COMMANDS=1
       - name: Run tests

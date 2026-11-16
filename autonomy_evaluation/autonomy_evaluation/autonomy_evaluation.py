@@ -1,8 +1,10 @@
 # Copyright Thinking Cars GmbH
 # SPDX-License-Identifier: Apache-2.0
 
+import array
 import json
 import signal
+import threading
 import time
 from collections import deque, OrderedDict
 from functools import partial
@@ -11,16 +13,21 @@ from typing import Any, Callable, Collection, Optional, Sequence, Union
 import rclpy
 import rclpy.exceptions
 from autonomy_datasets_msgs.srv import RequestSamples
-from autonomy_evaluation.evaluations import load_evaluation
+from autonomy_evaluation.evaluations import Evaluation, Input, load_evaluations, merged_inputs, ROLES
+from autonomy_evaluation.evaluations.Evaluation import CONFIG_SEPARATOR, flatten_config, unflatten_config
+from autonomy_evaluation.lanelet2_map_client import Lanelet2MapClient
+from autonomy_evaluation.utils.Lanelet2Map import Lanelet2Map
 from rcl_interfaces.msg import FloatingPointRange, IntegerRange, ParameterDescriptor, SetParametersResult
 from rclpy.clock import Clock, ClockType
-from rclpy.executors import ExternalShutdownException
+from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.publisher import Publisher
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.signals import SignalHandlerOptions
 from rclpy.subscription import Subscription
 from rclpy.task import Future
 from rclpy.timer import Timer
+from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformListener
 
 # Interval in seconds at which the evaluation checks whether it can request further samples; the
@@ -35,9 +42,23 @@ _SERVICE_WAIT_LOG_INTERVAL_S = 10.0
 # sent just before shutting down still arrive
 _DATASET_SHUTDOWN_GRACE_PERIOD_S = 2.0
 
+# Seconds the event loop waits for work at most before checking whether the node was asked to stop
+_SPIN_TIMEOUT_S = 0.2
+
+# Interval in seconds at which skipping samples that cannot be evaluated is logged
+_SKIP_LOG_INTERVAL_S = 10.0
+
+# Seconds between answering a request to finish the evaluation and shutting down, which lets the
+# response reach the client before the node is gone
+_FINISH_SHUTDOWN_DELAY_S = 0.5
+
 # Number of samples whose messages are kept while they wait for the messages of their remaining
 # evaluation inputs
 _SYNCHRONIZER_QUEUE_SIZE = 10
+
+# Placeholder of the 'results_path' parameter replaced by the name of each evaluation, so that the
+# evaluations of a node write their results to a file each
+RESULTS_PATH_PLACEHOLDER = "{evaluation}"
 
 # Values of the 'sample_source' parameter: the node requests the samples to evaluate from the
 # dataset, or evaluates whatever samples reach it, e.g. from a simulation or the RViz playback panel
@@ -205,8 +226,9 @@ class AutonomyEvaluation(Node):
         self.evaluation = self.declare_and_load_parameter(
             name="evaluation",
             param_type=rclpy.Parameter.Type.STRING,
-            description="name of an evaluation of this package, or '<module>:<class>' of an evaluation implemented in "
-            "another package",
+            description="evaluations to run on the same samples: the name of an evaluation of this package, of an area "
+            "running all its evaluations, e.g. 'driving_behavior', or '<module>:<class>' of an evaluation implemented in "
+            "another package; several as comma-separated list, e.g. 'criticality,comfort'",
             default="object_detection_3d",
             add_to_auto_reconfigurable_params=False,
             read_only=True,
@@ -237,6 +259,16 @@ class AutonomyEvaluation(Node):
             )
             raise SystemExit(1)
         self.requests_samples = self.sample_source == SAMPLE_SOURCE_DATASET
+
+        self.shutdown_completes = self.declare_and_load_parameter(
+            name="shutdown_completes",
+            param_type=rclpy.Parameter.Type.BOOL,
+            description="with sample source 'external', mark the results written when the node is stopped as complete, "
+            "e.g. when an orchestration stops the evaluation together with the simulation at the end of each scenario",
+            default=False,
+            add_to_auto_reconfigurable_params=False,
+            read_only=True,
+        )
 
         self.sync_tolerance = self.declare_and_load_parameter(
             name="sync_tolerance",
@@ -287,8 +319,20 @@ class AutonomyEvaluation(Node):
         self.results_path = self.declare_and_load_parameter(
             name="results_path",
             param_type=rclpy.Parameter.Type.STRING,
-            description="path of the JSON file the evaluation results are written to; results are only logged if empty",
+            description="path of the JSON file the results of an evaluation are written to, in which '{evaluation}' is "
+            "replaced by the name of the evaluation, as required to run several; results are only logged if empty",
             default="",
+        )
+
+        self.map_server = self.declare_and_load_parameter(
+            name="map_server",
+            param_type=rclpy.Parameter.Type.STRING,
+            description="node providing the Lanelet2 map of the current scene by its parameters 'map_contents', 'origin_lat', "
+            "'origin_lon' and 'map_frame_id', e.g. '/datasets' of autonomy_datasets or '/lanelet2_map_server'; evaluated "
+            "without map if empty",
+            default="",
+            add_to_auto_reconfigurable_params=False,
+            read_only=True,
         )
 
         self.setup()
@@ -393,39 +437,51 @@ class AutonomyEvaluation(Node):
 
         self.data_subscriptions: dict[str, Subscription] = {}
 
-        # load the selected evaluation and the topics it reads
+        # load the selected evaluations, configure them, and determine the topics their computed metrics read; all
+        # evaluations are evaluated on the same samples, so they read an input of the same name from the same topic
         try:
-            evaluation_handler = load_evaluation(self.evaluation)
-            inputs = evaluation_handler.all_inputs()
+            evaluation_handlers = load_evaluations(self.evaluation)
+            for evaluation_handler in evaluation_handlers:
+                self.configure_evaluation(evaluation_handler)
+            declared_inputs = merged_inputs(evaluation_handlers)
+            visualization_outputs = self.visualization_outputs(evaluation_handlers) if self.visualize else {}
+            self.check_results_path(self.results_path, evaluation_handlers)
         except ValueError as exception:
             self.get_logger().fatal(f"{exception}, exiting")
             raise SystemExit(1)
+        # static inputs are no topics, but context the node passes with every sample, e.g. the map
+        inputs = {name: declared for name, declared in declared_inputs.items() if not declared.static}
+        self.setup_static_inputs({name: declared for name, declared in declared_inputs.items() if declared.static})
 
         # provide the evaluation with the transforms between the frames of its messages, e.g. to
         # compare objects given in different frames; the buffer follows the node clock, so that it
         # is cleared when the simulation clock jumps back to a scene recorded earlier
         self.tf_buffer = Buffer(node=self)
         self.tf_listener = TransformListener(self.tf_buffer, self)
-        evaluation_handler.tf_buffer = self.tf_buffer
+        for evaluation_handler in evaluation_handlers:
+            evaluation_handler.tf_buffer = self.tf_buffer
 
         # create subscriptions for the topics of the evaluation, whose messages are matched into
         # the samples to evaluate by their stamp; a sample only waits for the message of an
         # optional topic while that topic is published
         self.unpublished_optional_topics: set[str] = set()
+        synchronized = {name: declared for name, declared in inputs.items() if declared.synchronized}
         self.message_synchronizer = SampleSynchronizer(
-            topics=list(inputs),
+            topics=list(synchronized),
             callback=self.evaluate_sample,
             queue_size=_SYNCHRONIZER_QUEUE_SIZE,
             tolerance=self.sync_tolerance,
-            optional_topics=list(evaluation_handler.optional_ground_truth()),
+            optional_topics=[name for name, declared in synchronized.items() if declared.optional],
             expects_message=self.is_published,
         )
-        derived_topics = evaluation_handler.derived_topics()
-        for name, msg_type in inputs.items():
+        # the latest message of each input that is not matched with the others by its stamp, passed with every sample
+        self.latest_messages: dict[str, Any] = {name: None for name, declared in inputs.items() if declared.latest}
+        derived_topics = {name: declared.next_to for name, declared in inputs.items() if declared.next_to is not None}
+        for name, declared in inputs.items():
             self.data_subscriptions[name] = self.create_subscription(
-                msg_type,
+                declared.msg_type,
                 self.input_topic(name, derived_topics),
-                partial(self.receive_message, name),
+                partial(self.receive_latest_message if declared.latest else self.receive_message, name),
                 qos_profile=QoSProfile(
                     reliability=ReliabilityPolicy.RELIABLE,
                     durability=DurabilityPolicy.VOLATILE,
@@ -433,31 +489,40 @@ class AutonomyEvaluation(Node):
                     depth=10,
                 ),
             )
-        roles = {
-            "input": evaluation_handler.required_inputs(),
-            "ground truth": evaluation_handler.required_ground_truth(),
-            "optional ground truth": evaluation_handler.optional_ground_truth(),
+        input_topics = {
+            **{name: subscription.topic_name for name, subscription in self.data_subscriptions.items()},
+            **self.static_input_sources,
         }
-        for role, names in roles.items():
-            if names:
-                topics = ", ".join(f"'{name}' from '{self.data_subscriptions[name].topic_name}'" for name in names)
-                self.get_logger().info(f"Evaluating {role} {topics}")
+        for evaluation_handler in evaluation_handlers:
+            evaluation_handler.input_topics = input_topics
+        for role in ROLES:
+            topics = ", ".join(
+                f"'{name}' from '{input_topics[name]}'"
+                + (" (latest message)" if declared.latest else "")
+                + (" (optional)" if declared.optional else "")
+                for name, declared in declared_inputs.items()
+                if declared.role == role and name in input_topics
+            )
+            if topics:
+                self.get_logger().info(f"Reading {role} {topics}")
 
         # Messages without a header are stamped when they are received, which the messages of
         # other inputs can only match within a tolerance
-        unstamped_inputs = [name for name, msg_type in inputs.items() if "header" not in msg_type.get_fields_and_field_types()]
+        unstamped_inputs = [
+            name for name, declared in synchronized.items() if "header" not in declared.msg_type.get_fields_and_field_types()
+        ]
         if unstamped_inputs:
             self.get_logger().info(f"Stamping the messages of {unstamped_inputs} on reception, as they carry no header")
-            if len(inputs) > 1 and not self.sync_tolerance:
+            if len(synchronized) > 1 and not self.sync_tolerance:
                 self.get_logger().warn(
                     f"Messages of {unstamped_inputs} can only be matched with those of other inputs if they are "
                     "received at exactly their stamp, set 'sync_tolerance' to match them within a tolerance"
                 )
 
-        # create publishers visualizing the evaluation's per-sample matching outcome
+        # create publishers visualizing the per-sample outcome of the evaluations, e.g. the matching of a detection
         self.visualization_publishers: dict[str, Publisher] = {}
         if self.visualize:
-            for msg_topic, msg_type in evaluation_handler.visualization_outputs().items():
+            for msg_topic, msg_type in visualization_outputs.items():
                 self.visualization_publishers[msg_topic] = self.create_publisher(
                     msg_type,
                     f"~/{msg_topic}",
@@ -470,7 +535,9 @@ class AutonomyEvaluation(Node):
                 )
             self.get_logger().info(f"Visualizing evaluation results on: {sorted(self.visualization_publishers)}")
 
-        self.evaluation_handler = evaluation_handler
+        self.evaluation_handlers = evaluation_handlers
+        # names of the inputs each evaluation reads, whose messages it is passed of every sample
+        self.evaluation_inputs = {evaluation.name: list(evaluation.inputs()) for evaluation in evaluation_handlers}
 
         self.published_sample_ids: list[int] = []
         # A sample may already be evaluated before the dataset node answers the request that
@@ -487,19 +554,41 @@ class AutonomyEvaluation(Node):
         self.dataset_available = False
         self.dataset_unavailable_since: Optional[float] = None
         self.evaluation_finished = False
+        # samples evaluated by any evaluation, and the samples each evaluation recorded or could not evaluate
         self.num_evaluated_samples = 0
+        self.num_recorded_samples = {evaluation.name: 0 for evaluation in evaluation_handlers}
+        self.num_skipped_samples = {evaluation.name: 0 for evaluation in evaluation_handlers}
+
+        # Whoever publishes the samples may end the evaluation, e.g. a closed-loop simulation at the
+        # end of its scenario, which is the only way to learn about the end of an external sample source
+        self.finish_service = self.create_service(Trigger, "~/finish", self.finish_callback)
+        self.shutdown_timer: Optional[Timer] = None
+
+        # Whoever publishes the samples may also separate them into scenes, e.g. a closed-loop
+        # simulation running one scenario after the other: once the service has been called, the
+        # samples evaluated between two calls form a scene of their own, numbered in the order the
+        # scenes were evaluated
+        self.next_scene_service = self.create_service(Trigger, "~/next_scene", self.next_scene_callback)
+        self.separates_scenes = False
+        # the entries the evaluations recorded of each sample of the current scene
+        self.samples_of_current_scene: list[list[dict[str, Any]]] = []
+        self.num_separated_scenes = 0
 
         # With an external sample source, the samples are evaluated as they arrive. Whoever
         # publishes them receives the responses of the dataset, if any, so the evaluation neither
         # learns the scenes of the samples nor when publishing has ended, and reports its results
-        # once the node is stopped.
+        # once it is asked to finish or the node is stopped.
         if not self.requests_samples:
             self.request_timer: Optional[Timer] = None
             if self.requested_sample_ids:
                 self.get_logger().warn(
                     f"Parameter 'sample_ids' is ignored, as only sample source '{SAMPLE_SOURCE_DATASET}' requests samples"
                 )
-            self.get_logger().info("Evaluating the samples published by others, stop the node to report the results")
+            self.get_logger().info(
+                "Evaluating the samples published by others, call "
+                f"'{self.resolve_service_name(self.next_scene_service.srv_name)}' to start the next scene and "
+                f"'{self.resolve_service_name(self.finish_service.srv_name)}' or stop the node to report the results"
+            )
             return
 
         self.sample_request_client = self.create_client(RequestSamples, "~/request_samples")
@@ -513,6 +602,118 @@ class AutonomyEvaluation(Node):
             clock=Clock(clock_type=ClockType.STEADY_TIME),
         )
         self.get_logger().info(f"Requesting samples to evaluate from '{self.sample_request_service}'")
+
+    def setup_static_inputs(self, static_inputs: dict[str, Input]):
+        """Sets up the sources of the static inputs of the evaluation, which the node passes with every sample
+
+        A static input is no topic, but context that holds for many samples. The only static input
+        is the Lanelet2 map of the current scene, which a client receives from the parameters of
+        the 'map_server' node. Without map server, an optional map is None, and a required one stops
+        the node.
+
+        Args:
+            static_inputs (dict[str, Input]): static inputs of the evaluation by name
+
+        Raises:
+            SystemExit: if a static input cannot be provided
+        """
+        self.map_client: Optional[Lanelet2MapClient] = None
+        # name of each static input to a description of where it is read from, for the results
+        self.static_input_sources: dict[str, str] = {}
+        self.static_inputs = static_inputs
+        for name, declared in static_inputs.items():
+            if declared.msg_type is not Lanelet2Map:
+                self.get_logger().fatal(f"Static input '{name}' of type {declared.msg_type} cannot be provided, exiting")
+                raise SystemExit(1)
+            if not self.map_server:
+                if not declared.optional:
+                    self.get_logger().fatal(f"Input '{name}' requires a Lanelet2 map, set parameter 'map_server', exiting")
+                    raise SystemExit(1)
+                self.get_logger().info(f"Evaluating without optional '{name}', as parameter 'map_server' is not set")
+                continue
+            if self.map_client is None:
+                self.map_client = Lanelet2MapClient(self, self.map_server)
+            self.static_input_sources[name] = f"parameters of {self.map_client.server}"
+
+    def static_messages(self) -> dict[str, Any]:
+        """Collects the current values of the static inputs, which are passed with the messages of a sample
+
+        Returns:
+            dict[str, Any]: value of each static input by name, None for a map that is not available
+        """
+        return {name: self.map_client.map if self.map_client is not None else None for name in self.static_inputs}
+
+    @staticmethod
+    def check_results_path(results_path: str, evaluations: Sequence[Evaluation]):
+        """Checks that the results of each evaluation are written to a file of their own
+
+        Args:
+            results_path (str): value of the 'results_path' parameter
+            evaluations (Sequence[Evaluation]): evaluations of the node
+
+        Raises:
+            ValueError: if several evaluations would write their results to the same file
+        """
+        if results_path and len(evaluations) > 1 and RESULTS_PATH_PLACEHOLDER not in results_path:
+            raise ValueError(
+                f"Parameter 'results_path' has to contain '{RESULTS_PATH_PLACEHOLDER}' to write the results of the "
+                f"evaluations {[evaluation.name for evaluation in evaluations]} to a file each: '{results_path}'"
+            )
+
+    @staticmethod
+    def visualization_outputs(evaluations: Sequence[Evaluation]) -> dict[str, Any]:
+        """Collects the outputs the evaluations publish their visualization on
+
+        Args:
+            evaluations (Sequence[Evaluation]): evaluations of the node
+
+        Returns:
+            dict[str, Any]: ROS message type of each output by its node-relative topic
+
+        Raises:
+            ValueError: if two evaluations publish an output of the same name
+        """
+        outputs: dict[str, Any] = {}
+        for evaluation in evaluations:
+            for msg_topic, msg_type in evaluation.visualization_outputs().items():
+                if msg_topic in outputs:
+                    raise ValueError(f"Evaluations publish visualization output '{msg_topic}' twice, so they cannot run together")
+                outputs[msg_topic] = msg_type
+        return outputs
+
+    def configure_evaluation(self, evaluation: Evaluation):
+        """Configures the evaluation, e.g. which metrics it computes, by the ROS parameters named after it
+
+        Every entry of the configuration of the evaluation is a read-only parameter named
+        '<evaluation>.<entry>', e.g. 'object_detection_3d.ap.matching_thresholds' or
+        'criticality.metrics', whose default is the default of the entry. Parameters are typed
+        dynamically, so that a parameter file may give an integer for a floating-point entry; the
+        evaluation checks the type of each entry against its default instead.
+
+        Args:
+            evaluation (Evaluation): evaluation to configure
+
+        Raises:
+            ValueError: if an entry is of the wrong type or selects no or an unknown metric
+        """
+        prefix = f"{evaluation.name}{CONFIG_SEPARATOR}"
+        configured = {}
+        for name, default in flatten_config(evaluation.config_defaults(), prefix).items():
+            param_desc = ParameterDescriptor(
+                description=f"configuration '{name[len(prefix):]}' of evaluation '{evaluation.name}', see its documentation",
+                read_only=True,
+                dynamic_typing=True,
+            )
+            value = self.declare_parameter(name, default, param_desc).value
+            # array parameters are read as arrays of their element type
+            configured[name[len(prefix) :]] = list(value) if isinstance(value, array.array) else value
+
+        evaluation.configure(unflatten_config(configured))
+        if evaluation.available_metrics():
+            self.get_logger().info(
+                f"Computing the metrics {list(evaluation.selected_metrics())} of evaluation '{evaluation.name}'"
+            )
+        self.get_logger().info(f"Configured evaluation '{evaluation.name}' with {json.dumps(evaluation.config)}")
 
     def input_topic(self, name: str, derived_topics: dict[str, tuple[str, str]]) -> str:
         """Determines the topic an input of the evaluation is subscribed on
@@ -706,21 +907,21 @@ class AutonomyEvaluation(Node):
         """
         for scene_id in published_scene_ids:
             if self.samples_awaiting_scene:
-                self.samples_awaiting_scene.popleft()["scene_id"] = str(scene_id)
+                for entry in self.samples_awaiting_scene.popleft():
+                    entry["scene_id"] = str(scene_id)
             else:
                 self.scenes_awaiting_sample.append(str(scene_id))
 
     def finalize_evaluation(self, complete: bool = True):
-        """Aggregates the metrics of the evaluated samples per scene and over the whole evaluation
+        """Aggregates the metrics of the evaluated samples per scene and over the whole evaluation, for each evaluation
 
-        The results hold the metrics of every single sample, of the samples of each scene, and of
-        all evaluated samples, of which the metrics over all samples are logged. Calling this on an
-        evaluation that has already been finalized does nothing, so that an evaluation which ran to
-        its end is not finalized a second time when the node shuts down.
+        Each evaluation reports its results of its own (see 'report_results'). Calling this on
+        evaluations that have already been finalized does nothing, so that evaluations which ran to
+        their end are not finalized a second time when the node shuts down.
 
         Args:
             complete (bool, optional): whether all samples to evaluate have been processed; the
-                results of an evaluation that was interrupted before its last sample, e.g. with
+                results of evaluations that were interrupted before their last sample, e.g. with
                 Ctrl-C, are marked as incomplete via '"complete": false'
         """
         if self.evaluation_finished:
@@ -729,30 +930,213 @@ class AutonomyEvaluation(Node):
         if self.request_timer is not None:
             self.request_timer.cancel()
 
-        if not self.num_evaluated_samples:
-            self.get_logger().warn(f"Evaluation '{self.evaluation}' evaluated no sample, no metrics are aggregated")
+        # the samples evaluated since the last scene ended form the last scene
+        if self.separates_scenes:
+            self.end_scene()
+
+        for evaluation_handler in self.evaluation_handlers:
+            self.report_results(evaluation_handler, complete)
+
+    def report_results(self, evaluation: Evaluation, complete: bool):
+        """Aggregates the metrics an evaluation recorded, and writes or logs its results
+
+        The results hold the metrics of every single sample, of the samples of each scene, and of
+        all evaluated samples, of which the metrics over all samples are logged. They are written
+        to 'results_path', with the name of the evaluation in place of its placeholder.
+
+        Args:
+            evaluation (Evaluation): evaluation to report the results of
+            complete (bool): whether all samples to evaluate have been processed
+        """
+        name = evaluation.name
+        if not self.num_recorded_samples[name]:
+            self.get_logger().warn(f"Evaluation '{name}' evaluated no sample, no metrics are aggregated")
             return
 
-        results = self.evaluation_handler.finalize(complete=complete)
+        results = evaluation.finalize(complete=complete)
+        # samples the evaluation could not evaluate, e.g. without the transform between their frames
+        num_skipped_samples = self.num_skipped_samples[name]
+        results["num_skipped_samples"] = num_skipped_samples
         aggregated_metrics = json.dumps(results["metrics"], indent=2, default=str)
         evaluated_samples = f"{results['num_samples']} evaluated sample(s) of {results['num_scenes']} scene(s)"
+        if num_skipped_samples:
+            evaluated_samples += f", skipping {num_skipped_samples} sample(s) that could not be evaluated"
         if complete:
-            self.get_logger().info(f"Evaluation '{self.evaluation}' finished after {evaluated_samples}.")
+            self.get_logger().info(f"Evaluation '{name}' finished after {evaluated_samples}.")
         else:
             self.get_logger().warn(
-                f"Evaluation '{self.evaluation}' was interrupted after {evaluated_samples}, "
-                "its results are marked as incomplete."
+                f"Evaluation '{name}' was interrupted after {evaluated_samples}, its results are marked as incomplete."
             )
+
+        # limits are optional, and only judged if configured
+        if "limits" in results:
+            verdict = results["limits"]
+            outcome = {True: "passed", False: "failed", None: "left undecided"}[verdict["passed"]]
+            summary = (
+                f"Evaluation '{name}' {outcome} its limits: {verdict['num_passed']} of "
+                f"{len(verdict['checks'])} limit(s) passed, {verdict['num_failed']} failed"
+            )
+            if verdict["passed"]:
+                self.get_logger().info(summary)
+            else:
+                self.get_logger().warn(summary)
 
         if self.results_path:
             reported_results = "evaluation results" if complete else "incomplete evaluation results"
+            results_path = self.results_path.replace(RESULTS_PATH_PLACEHOLDER, name)
             try:
-                results_path = self.evaluation_handler.save_results(self.results_path, results=results)
-                self.get_logger().info(f"Wrote {reported_results} to '{results_path}'")
+                results_path = evaluation.save_results(results_path, results=results)
+                self.get_logger().info(f"Wrote {reported_results} of '{name}' to '{results_path}'")
             except OSError as exception:
-                self.get_logger().error(f"Failed to write {reported_results} to '{self.results_path}': {exception}")
+                self.get_logger().error(f"Failed to write {reported_results} of '{name}' to '{results_path}': {exception}")
         else:
-            self.get_logger().info(f"Aggregated dataset metrics:\n{aggregated_metrics}")
+            self.get_logger().info(f"Aggregated metrics of evaluation '{name}':\n{aggregated_metrics}")
+
+    def finish_callback(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
+        """Finishes the evaluation on request, reports its results and shuts down the node
+
+        With an external sample source, e.g. a closed-loop simulation, only whoever publishes the
+        samples knows when the last one has been published, so its results are complete once it
+        asks to finish. With the dataset as sample source, the results are only complete if the
+        dataset has published its last sample; finishing earlier leaves the remaining samples
+        unevaluated, so the results are marked as incomplete. The node shuts down shortly after the
+        response, so that the response still reaches the client.
+
+        Args:
+            request (Trigger.Request): request to finish, without content
+            response (Trigger.Response): response to fill
+
+        Returns:
+            Trigger.Response: whether the evaluation was finished, and how
+        """
+        if self.evaluation_finished:
+            response.success = False
+            response.message = f"Evaluation '{self.evaluation}' has already finished"
+            return response
+
+        complete = not self.requests_samples or self.publishing_finished
+        self.get_logger().info(f"Finishing evaluation '{self.evaluation}' on request")
+        self.finalize_evaluation(complete=complete)
+        self.shutdown_timer = self.create_timer(
+            _FINISH_SHUTDOWN_DELAY_S, self.shutdown, clock=Clock(clock_type=ClockType.STEADY_TIME)
+        )
+
+        reported_results = f"written to '{self.results_path}'" if self.results_path else "logged"
+        response.success = True
+        response.message = (
+            f"Finished evaluation '{self.evaluation}' after {self.num_evaluated_samples} evaluated sample(s), "
+            f"{'complete' if complete else 'incomplete'} results {reported_results}"
+        )
+        return response
+
+    def next_scene_callback(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
+        """Ends the current scene on request, so that the samples evaluated afterwards belong to the next scene
+
+        With an external sample source, the evaluation learns the scenes of the samples only from
+        whoever publishes them, e.g. a closed-loop simulation that runs one scenario after the
+        other and calls this service between two scenarios. Once the service has been called, the
+        samples evaluated since the previous call, or since the start, form a scene of their own,
+        named 'scene_<n>' in the order the scenes were evaluated; the samples evaluated after the
+        last call form the last scene once the evaluation finishes. As a scene without samples is
+        skipped, the service may as well be called before every scenario as after every scenario.
+        With the dataset as sample source, the dataset reports the scenes of the samples instead.
+
+        Args:
+            request (Trigger.Request): request to start the next scene, without content
+            response (Trigger.Response): response to fill
+
+        Returns:
+            Trigger.Response: whether the scene was ended, and which scene it was
+        """
+        if self.requests_samples:
+            response.success = False
+            response.message = (
+                f"The dataset reports the scenes of the samples it publishes, scenes are only started on request with "
+                f"sample source '{SAMPLE_SOURCE_EXTERNAL}'"
+            )
+            return response
+        if self.evaluation_finished:
+            response.success = False
+            response.message = f"Evaluation '{self.evaluation}' has already finished"
+            return response
+
+        self.separates_scenes = True
+        num_samples = len(self.samples_of_current_scene)
+        scene_id = self.end_scene()
+        # the latest messages, e.g. the route, belong to the scene that ended
+        self.latest_messages = dict.fromkeys(self.latest_messages)
+        response.success = True
+        if scene_id is None:
+            response.message = "No sample was evaluated since the last scene ended, the following samples form the next scene"
+        else:
+            response.message = (
+                f"Scene '{scene_id}' ended after {num_samples} evaluated sample(s), the following samples form the next scene"
+            )
+        self.get_logger().info(response.message)
+        return response
+
+    def skip_sample(self, sample_id: str, evaluation: Evaluation, reason: Exception):
+        """Leaves a sample out of an evaluation that cannot evaluate it, e.g. without the transform between its frames
+
+        A live system, e.g. a simulation that has just started, may publish samples before
+        everything they need is available, which must not stop the evaluation of the following
+        samples. The other evaluations still evaluate the sample.
+
+        Args:
+            sample_id (str): sample that is left out
+            evaluation (Evaluation): evaluation that leaves the sample out
+            reason (Exception): why the evaluation cannot evaluate the sample
+        """
+        self.num_skipped_samples[evaluation.name] += 1
+        self.get_logger().warn(
+            f"Evaluation '{evaluation.name}' skips sample '{sample_id}' ({self.num_skipped_samples[evaluation.name]} "
+            f"skipped so far): {reason}",
+            throttle_duration_sec=_SKIP_LOG_INTERVAL_S,
+        )
+
+    def drop_sample(self):
+        """Continues without a sample that no evaluation could evaluate
+
+        With the dataset as sample source, the scene of the dropped sample is dropped as well, so
+        that the scenes of the following samples stay matched with them, and the evaluation
+        continues with the next samples.
+        """
+        if self.requests_samples:
+            if self.scenes_awaiting_sample:
+                self.scenes_awaiting_sample.popleft()
+            else:
+                self.samples_awaiting_scene.append([])
+            self.evaluation_deadline = time.monotonic() + self.evaluation_timeout
+            self.advance_evaluation()
+
+    def end_scene(self) -> Optional[str]:
+        """Attributes the samples evaluated since the last scene ended to a scene of their own
+
+        Returns:
+            Optional[str]: name of the scene, None if no sample was evaluated since the last scene ended
+        """
+        if not self.samples_of_current_scene:
+            return None
+        self.num_separated_scenes += 1
+        scene_id = f"scene_{self.num_separated_scenes}"
+        for entries in self.samples_of_current_scene:
+            for entry in entries:
+                entry["scene_id"] = scene_id
+        self.samples_of_current_scene = []
+        return scene_id
+
+    def completes_on_shutdown(self) -> bool:
+        """Decides whether the results written when the node is stopped are complete
+
+        Stopping an evaluation usually interrupts it, so that its results are incomplete. Only with
+        an external sample source and 'shutdown_completes', stopping is the regular end of the
+        evaluation, e.g. when an orchestration stops it together with the simulation at the end of
+        a scenario.
+
+        Returns:
+            bool: whether the results are complete
+        """
+        return not self.requests_samples and self.shutdown_completes
 
     def shutdown(self):
         """Stops the node, as there is nothing left to evaluate once the evaluation has finished
@@ -781,12 +1165,23 @@ class AutonomyEvaluation(Node):
             stamp = self.get_clock().now().seconds_nanoseconds()
         self.message_synchronizer.add(name, message, stamp)
 
-    def evaluate_sample(self, stamp: Stamp, messages: dict[str, Any]):
-        """Evaluates a single sample once the messages of all its inputs have been received
+    def receive_latest_message(self, name: str, message: Any):
+        """Keeps the latest message of an input that is passed with every sample instead of being matched by its stamp
 
-        The messages are passed to the evaluation by the names of their inputs, which match the
-        parameters of its ``compute_sample_metrics``. The message of optional ground truth whose
-        topic is not published is None.
+        Args:
+            name (str): input name the message was received on
+            message (Any): received message
+        """
+        self.latest_messages[name] = message
+
+    def evaluate_sample(self, stamp: Stamp, messages: dict[str, Any]):
+        """Evaluates a single sample by all evaluations once the messages of all its inputs have been received
+
+        The messages are passed to each evaluation by the names of the inputs it reads, together
+        with the latest messages of the inputs that are not matched by their stamps, e.g. a route,
+        and the current values of the static inputs, e.g. the map. The message of an optional input
+        whose topic is not published is None. An evaluation that cannot evaluate the sample leaves
+        it out, while the others still evaluate it.
 
         Samples are identified by the stamp of their message of the first input, which is the
         stamp the dataset recorded them with, and are attributed to the scene the dataset
@@ -799,27 +1194,53 @@ class AutonomyEvaluation(Node):
         sample_id = f"{stamp[0]}.{stamp[1]:09d}"
         self.get_logger().debug(f"Evaluating sample '{sample_id}'")
 
-        result = self.evaluation_handler.record_sample(sample_id=sample_id, **messages)
+        messages = {**messages, **self.latest_messages, **self.static_messages()}
+        # the evaluations that evaluated the sample, with the messages they were passed, and the entries they recorded
+        evaluated: list[tuple[Evaluation, dict[str, Any]]] = []
+        entries: list[dict[str, Any]] = []
+        for evaluation_handler in self.evaluation_handlers:
+            evaluation_messages = {name: messages[name] for name in self.evaluation_inputs[evaluation_handler.name]}
+            try:
+                entry = evaluation_handler.record_sample(
+                    sample_id=sample_id, stamp=_to_nanoseconds(stamp) * 1e-9, **evaluation_messages
+                )
+            except ValueError as exception:
+                self.skip_sample(sample_id, evaluation_handler, exception)
+                continue
+            self.num_recorded_samples[evaluation_handler.name] += 1
+            evaluated.append((evaluation_handler, evaluation_messages))
+            entries.append(entry)
+        if not entries:
+            self.drop_sample()
+            return
         self.num_evaluated_samples += 1
         # attribute the sample to the scene the dataset published it from, which the dataset may
         # only report after the sample has been evaluated; with an external sample source, the
-        # scene is only reported to whoever requested the sample, if at all
+        # sample belongs to the current scene, which ends once whoever publishes the samples
+        # starts the next one, if at all
         if self.requests_samples:
             if self.scenes_awaiting_sample:
-                result["scene_id"] = self.scenes_awaiting_sample.popleft()
+                scene_id = self.scenes_awaiting_sample.popleft()
+                for entry in entries:
+                    entry["scene_id"] = scene_id
             else:
-                self.samples_awaiting_scene.append(result)
+                self.samples_awaiting_scene.append(entries)
+        else:
+            self.samples_of_current_scene.append(entries)
         # a system under test that needs longer for some samples must not run into the timeout,
         # which therefore restarts with every evaluated sample
         self.evaluation_deadline = time.monotonic() + self.evaluation_timeout
         if not self.results_path:
-            self.get_logger().debug(f"Sample '{sample_id}' result: {result}")
+            self.get_logger().debug(f"Sample '{sample_id}' results: {entries}")
 
-        # publish the sample's visualization for inspection in RViz
+        # publish the sample's visualization for inspection in RViz, of the evaluations that evaluated it
         if self.visualization_publishers:
-            visualization = self.evaluation_handler.visualize_sample(sample_id=sample_id, **messages)
+            visualization: dict[str, Any] = {}
+            for evaluation_handler, evaluation_messages in evaluated:
+                visualization.update(evaluation_handler.visualize_sample(sample_id=sample_id, **evaluation_messages))
             for msg_topic, publisher in self.visualization_publishers.items():
-                publisher.publish(visualization[msg_topic])
+                if msg_topic in visualization:
+                    publisher.publish(visualization[msg_topic])
 
         # request the next samples, or aggregate the dataset metrics if this was the last one; with
         # an external sample source, others publish the next samples instead
@@ -830,10 +1251,19 @@ class AutonomyEvaluation(Node):
 def main():
     """Initializes ROS, runs the node event loop, and performs shutdown cleanup."""
 
-    rclpy.init()
+    # rclpy only handles SIGINT, as its handling of SIGTERM hangs with rmw_zenoh_cpp. SIGTERM, e.g. from
+    # 'docker stop' or an orchestration stopping the evaluation at the end of a scenario, ends the
+    # event loop instead, which therefore waits for work only for a limited time, so that SIGTERM is
+    # handled even once no more messages arrive.
+    rclpy.init(signal_handler_options=SignalHandlerOptions.SIGINT)
     node = AutonomyEvaluation()
+    stop_requested = threading.Event()
+    signal.signal(signal.SIGTERM, lambda signum, frame: stop_requested.set())
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        while rclpy.ok() and not stop_requested.is_set():
+            executor.spin_once(timeout_sec=_SPIN_TIMEOUT_S)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
@@ -844,7 +1274,7 @@ def main():
         # the results are written, which they would otherwise abort.
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         try:
-            node.finalize_evaluation(complete=False)
+            node.finalize_evaluation(complete=node.completes_on_shutdown())
         finally:
             node.destroy_node()
             rclpy.try_shutdown()

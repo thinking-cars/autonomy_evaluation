@@ -3,7 +3,7 @@
 <package format="3">
 
   <name>autonomy_evaluation</name>
-  <version>2.0.0</version>
+  <version>2.1.0</version>
   <description>Metrics-based evaluation of automated driving modules, generating the evidence for benchmarking automated driving deployments</description>
 
   <maintainer email="hu@thinking-cars.de">Haohao Hu</maintainer>
@@ -16,12 +16,17 @@
 
   <depend>autonomy_datasets_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>lanelet2_python</depend>
   <depend>perception_msgs</depend>
   <depend>perception_msgs_utils</depend>
   <depend>python3-shapely</depend>
   <depend>rclpy</depend>
+  <depend>route_planning_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>tf2_perception_msgs</depend>
   <depend>tf2_ros_py</depend>
+  <depend>trajectory_planning_msgs</depend>
+  <depend>trajectory_planning_msgs_utils</depend>
 
   <exec_depend>autonomy_datasets_rviz_plugins</exec_depend>
   <exec_depend>perception_msgs_rviz_plugins</exec_depend>

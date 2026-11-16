@@ -4,5 +4,6 @@
 """Utility functions shared by the evaluations."""
 
 from autonomy_evaluation.utils.ObjectDetectionUtils import ObjectDetectionUtils
+from autonomy_evaluation.utils.PlanarUtils import PlanarUtils
 
-__all__ = ["ObjectDetectionUtils"]
+__all__ = ["ObjectDetectionUtils", "PlanarUtils"]

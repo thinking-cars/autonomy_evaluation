@@ -3,6 +3,6 @@
 
 """Object detection evaluations."""
 
-from autonomy_evaluation.evaluations.object_detection.ObjectDetection3D import ObjectDetection3D
+from autonomy_evaluation.evaluations.perception.object_detection.ObjectDetection3D import ObjectDetection3D
 
 __all__ = ["ObjectDetection3D"]
